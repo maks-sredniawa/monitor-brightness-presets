@@ -4,23 +4,37 @@ import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {collectPresets} from './lib/presets.js';
+
 export default class MonitorBrightnessPresetsPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
             title: _('Presets'),
-            description: _('Each preset sets every monitor to the same brightness. Presets without a name are not saved.'),
+            description: _('Each preset sets every monitor to the same brightness. Presets without a name, or with the name of a preset above them, are not saved.'),
         });
         page.add(group);
         window.add(page);
 
         const rows = [];
         const save = () => {
-            const presets = rows
-                .map(({entry, spin}) => [entry.text.trim(), spin.get_value_as_int()])
-                .filter(([name]) => name);
+            for (const row of rows) {
+                row.name = row.entry.text.trim();
+                row.percent = row.spin.get_value_as_int();
+            }
+            const {presets, saved, duplicates, active} = collectPresets(rows, settings.get_string('active-preset'));
+            for (const row of rows) {
+                if (duplicates.has(row))
+                    row.entry.add_css_class('error');
+                else
+                    row.entry.remove_css_class('error');
+            }
+            for (const row of saved)
+                row.savedName = row.name;
             settings.set_value('presets', new GLib.Variant('a(si)', presets));
+            if (active !== settings.get_string('active-preset'))
+                settings.set_string('active-preset', active);
         };
 
         const addRow = (name, percent) => {
@@ -38,7 +52,7 @@ export default class MonitorBrightnessPresetsPreferences extends ExtensionPrefer
             entry.add_suffix(new Gtk.Label({label: '%'}));
             entry.add_suffix(remove);
 
-            const row = {entry, spin};
+            const row = {entry, spin, savedName: name};
             rows.push(row);
             group.add(entry);
 

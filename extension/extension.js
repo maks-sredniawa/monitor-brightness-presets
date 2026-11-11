@@ -5,11 +5,32 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
-import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from './lib/monitors.js';
 
 const ICON = 'display-brightness-symbolic';
+
+function listNames(displays) {
+    return new Intl.ListFormat(undefined, {type: 'conjunction'}).format(displays.map(display => display.name));
+}
+
+function describeProblems(failed, unreachable) {
+    const sentences = [];
+    if (failed.length > 0) {
+        sentences.push(ngettext(
+            '%s did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.',
+            '%s did not change their brightness. Their own menus may be locking them, for example an ECO mode or picture preset.',
+            failed.length).format(listNames(failed)));
+    }
+    if (unreachable.length > 0) {
+        sentences.push(ngettext(
+            '%s did not answer over DDC/CI. Check that DDC/CI is on in its own menu.',
+            '%s did not answer over DDC/CI. Check that DDC/CI is on in each one’s own menu.',
+            unreachable.length).format(listNames(unreachable)));
+    }
+    return sentences.join(' ');
+}
 
 const PresetsToggle = GObject.registerClass(
 class PresetsToggle extends QuickMenuToggle {
@@ -18,6 +39,7 @@ class PresetsToggle extends QuickMenuToggle {
         this._extension = extension;
         this._settings = extension.getSettings();
         this._monitors = new Monitors();
+        this._request = 0;
 
         this.menu.setHeader(ICON, _('Brightness presets'), _('Sets every monitor at once'));
         this._presetSection = new PopupMenu.PopupMenuSection();
@@ -53,16 +75,17 @@ class PresetsToggle extends QuickMenuToggle {
     }
 
     async _apply(name, percent) {
+        const request = ++this._request;
         try {
-            const {displays, failed} = await this._monitors.setBrightness(percent);
+            const {displays, failed, unreachable} = await this._monitors.setBrightness(percent);
+            if (request !== this._request)
+                return;
             if (failed.length < displays.length)
                 this._settings.set_string('active-preset', name);
-            if (failed.length > 0) {
-                Main.notify(_('Brightness preset'),
-                    _('%s did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.').format(failed.map(display => display.name).join(', ')));
-            }
+            if (failed.length > 0 || unreachable.length > 0)
+                Main.notify(_('Brightness preset'), describeProblems(failed, unreachable));
         } catch (error) {
-            if (isCancelled(error))
+            if (request !== this._request || isCancelled(error))
                 return;
             if (error instanceof DdcutilMissingError) {
                 Main.notify(_('Brightness preset'), _('Install ddcutil to control your monitors.'));

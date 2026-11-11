@@ -33,31 +33,51 @@ async function ddcutil(args, cancellable) {
 export class Monitors {
     constructor() {
         this._cancellable = new Gio.Cancellable();
-        this._displays = null;
+        this._detection = null;
         this._applying = null;
         this._pendingPercent = null;
     }
 
     forget() {
-        this._displays = null;
+        this._detection = null;
     }
 
     async list() {
-        this._displays ??= await this._detect();
-        return this._displays;
+        if (this._detection)
+            return this._detection;
+        const detection = await this._detect();
+        // A monitor that did not answer may only be waking up, so ask again next time.
+        if (detection.unreachable.length === 0)
+            this._detection = detection;
+        return detection;
     }
 
     async _detect() {
         const detected = parseDisplays(await ddcutil(['detect', '--terse'], this._cancellable));
-        const readings = await Promise.allSettled(detected.map(display =>
-            ddcutil(['--bus', `${display.bus}`, 'getvcp', '10', '--brief'], this._cancellable)));
-        const displays = detected.flatMap((display, i) => {
-            const brightness = readings[i].status === 'fulfilled' ? parseBrightness(readings[i].value) : null;
-            return brightness ? [{...display, max: brightness.max}] : [];
+        const maxima = await Promise.all(detected.map(display =>
+            display.valid ? this._readMax(display.bus) : null));
+        const displays = [];
+        const unreachable = [];
+        detected.forEach(({bus, name}, i) => {
+            if (maxima[i] === null)
+                unreachable.push({bus, name});
+            else
+                displays.push({bus, name, max: maxima[i]});
         });
         if (displays.length === 0)
             throw new NoMonitorsError('No monitor answered over DDC/CI');
-        return displays;
+        return {displays, unreachable};
+    }
+
+    async _readMax(bus) {
+        try {
+            const output = await ddcutil(['--bus', `${bus}`, 'getvcp', '10', '--brief'], this._cancellable);
+            return parseBrightness(output)?.max ?? null;
+        } catch (error) {
+            if (isCancelled(error))
+                throw error;
+            return null;
+        }
     }
 
     // Clicking presets in quick succession must leave the last one applied, so
@@ -81,14 +101,14 @@ export class Monitors {
     }
 
     async _setAll(percent) {
-        const displays = await this.list();
+        const {displays, unreachable} = await this.list();
         const outcomes = await Promise.allSettled(displays.map(display =>
             ddcutil(['--bus', `${display.bus}`, 'setvcp', '10',
                 `${percentToValue(percent, display.max)}`], this._cancellable)));
         const failed = displays.filter((_display, i) => outcomes[i].status === 'rejected');
         if (failed.length > 0)
             this.forget();
-        return {displays, failed};
+        return {displays, failed, unreachable};
     }
 
     destroy() {

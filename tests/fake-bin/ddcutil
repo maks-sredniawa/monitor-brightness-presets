@@ -12,15 +12,28 @@ Display 2
    I2C bus:  /dev/i2c-6
    DRM_connector:           card1-HDMI-A-1
    Monitor:                 IVM:PL2745Q:11667M1A01234
+OUT
+    if [[ -n "$FAKE_DDCUTIL_INVALID_DISPLAY" ]]; then
+      cat <<'OUT'
 
 Invalid display
    I2C bus:  /dev/i2c-7
    DRM_connector:           card1-DP-2
-   Monitor:                 XXX:Broken:
+   EDID synopsis:
+      Mfg id:               XXX
 OUT
+    fi
     ;;
-  "--bus 4 getvcp 10 --brief") echo "VCP 10 C 70 100" ;;
-  "--bus 6 getvcp 10 --brief") echo "VCP 10 C 20 50" ;;
+  "--bus "*" getvcp 10 --brief")
+    if [[ " $FAKE_DDCUTIL_GETVCP_FAIL " == *" $2 "* ]]; then
+      echo "DDC communication failed" >&2; exit 1
+    fi
+    case "$2" in
+      4) echo "VCP 10 C 70 100" ;;
+      6) echo "VCP 10 C 20 50" ;;
+      *) echo "unexpected: $*" >&2; exit 2 ;;
+    esac
+    ;;
   "--bus $FAKE_DDCUTIL_FAIL_BUS setvcp"*) echo "DDC communication failed" >&2; exit 1 ;;
   *"setvcp"*) ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
