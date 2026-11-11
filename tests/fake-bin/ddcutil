@@ -23,6 +23,15 @@ Invalid display
       Mfg id:               XXX
 OUT
     fi
+    if [[ -n "$FAKE_DDCUTIL_LAPTOP_PANEL" ]]; then
+      cat <<'OUT'
+
+Invalid display
+   I2C bus:  /dev/i2c-1
+   DRM_connector:           card1-eDP-1
+   Monitor:                 BOE:NE135FBM-N41:
+OUT
+    fi
     ;;
   "--bus "*" getvcp 10 --brief")
     if [[ " $FAKE_DDCUTIL_GETVCP_FAIL " == *" $2 "* ]]; then

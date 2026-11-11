@@ -1,9 +1,11 @@
+const BUILT_IN_PANEL = /^(eDP|LVDS|DSI)-/;
+
 export function parseDisplays(detectOutput) {
     const displays = [];
     let current = null;
     for (const line of detectOutput.split('\n')) {
         if (/^(Display \d+|Invalid display)/.test(line)) {
-            current = {bus: null, name: '', valid: line.startsWith('Display')};
+            current = {bus: null, name: '', valid: line.startsWith('Display'), connector: ''};
             displays.push(current);
         } else if (/^\S/.test(line)) {
             current = null;
@@ -12,8 +14,10 @@ export function parseDisplays(detectOutput) {
             if (bus)
                 current.bus = Number(bus[1]);
             const connector = line.match(/DRM[_ ]connector:\s+card\d+-(\S+)/);
-            if (connector)
+            if (connector) {
+                current.connector = connector[1];
                 current.name ||= connector[1];
+            }
             const monitor = line.match(/Monitor:\s+([^:]*):([^:]*):/);
             if (monitor)
                 current.name = monitor[2].trim() || monitor[1].trim() || current.name;
@@ -21,7 +25,8 @@ export function parseDisplays(detectOutput) {
     }
     return displays
         .filter(display => display.bus !== null)
-        .map(display => ({...display, name: display.name || `I2C bus ${display.bus}`}));
+        .filter(display => display.valid || !BUILT_IN_PANEL.test(display.connector))
+        .map(({bus, name, valid}) => ({bus, name: name || `I2C bus ${bus}`, valid}));
 }
 
 export function parseBrightness(getvcpOutput) {

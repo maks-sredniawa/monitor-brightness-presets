@@ -18,7 +18,7 @@ function assertEqual(actual, expected) {
         throw new Error(`expected ${e}\n       got ${a}`);
 }
 
-function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false} = {}) {
+function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, laptopPanel = false} = {}) {
     const [fd, log] = GLib.file_open_tmp('ddcutil-XXXXXX.log');
     GLib.close(fd);
     GLib.setenv('PATH', `${fakeBin}:${systemPath}`, true);
@@ -26,6 +26,7 @@ function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false} 
     GLib.setenv('FAKE_DDCUTIL_FAIL_BUS', failBus, true);
     GLib.setenv('FAKE_DDCUTIL_GETVCP_FAIL', getvcpFail, true);
     GLib.setenv('FAKE_DDCUTIL_INVALID_DISPLAY', invalidDisplay ? '1' : '', true);
+    GLib.setenv('FAKE_DDCUTIL_LAPTOP_PANEL', laptopPanel ? '1' : '', true);
     return () => new TextDecoder().decode(GLib.file_get_contents(log)[1]).trim().split('\n');
 }
 
@@ -40,7 +41,7 @@ async function rejection(promise) {
 
 const detections = calls => calls().filter(call => call === 'detect --terse').length;
 
-test('parseDisplays keeps every display with its bus, model and validity', () => {
+test('parseDisplays keeps every external display with its bus, model and validity', () => {
     const output = `Display 1
    I2C bus:  /dev/i2c-4
    Monitor:                 GSM:LG ULTRAGEAR:
@@ -56,6 +57,11 @@ Display 2
 Invalid display
    I2C bus:          /dev/i2c-9
    DRM connector:    card1-DP-3
+
+Invalid display
+   I2C bus:          /dev/i2c-1
+   DRM connector:    card1-eDP-1
+   Monitor:          BOE:NE135FBM-N41:
 
 Phantom display
    I2C bus:  /dev/i2c-10
@@ -133,6 +139,16 @@ test('an invalid display is named without being asked for its brightness', async
     const result = await new Monitors().setBrightness(50);
     assertEqual(result.unreachable, [{bus: 7, name: 'DP-2'}]);
     assertEqual(calls().some(call => call.startsWith('--bus 7')), false);
+});
+
+test('a laptop panel is neither reported nor keeps the detection from being reused', async () => {
+    const calls = useFakeDdcutil({laptopPanel: true});
+    const monitors = new Monitors();
+    const result = await monitors.setBrightness(50);
+    await monitors.setBrightness(60);
+    assertEqual(result.unreachable, []);
+    assertEqual(calls().some(call => call.startsWith('--bus 1 ')), false);
+    assertEqual(detections(calls), 1);
 });
 
 test('a detection with a monitor that did not answer is not reused', async () => {
