@@ -1,0 +1,14 @@
+Monitor brightness presets
+Copyright (c) 2026 Maksymilian Średniawa. All rights reserved.
+
+This source code is published for reading, review, and verification of what
+the released extension does. It is not open source.
+
+You may not copy, modify, distribute, sublicense, publish, or make derivative
+works of this software, in source or packaged form, or distribute builds of it
+through extensions.gnome.org or any other channel, without prior written
+permission. Viewing and forking within GitHub, as permitted by the GitHub Terms
+of Service, is not a grant of any of the rights above.
+
+The extension runs ddcutil, a separate program under its own licence that is
+not bundled with it.

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.monitor-brightness-presets"
+          path="/org/gnome/shell/extensions/monitor-brightness-presets/">
+    <key name="presets" type="a(si)">
+      <default>[('Day', 100), ('Evening', 60), ('Night', 25)]</default>
+      <summary>Brightness presets</summary>
+      <description>Each preset is a name and a brightness in percent, applied to every monitor.</description>
+    </key>
+    <key name="active-preset" type="s">
+      <default>''</default>
+      <summary>The preset applied last</summary>
+    </key>
+  </schema>
+</schemalist>
