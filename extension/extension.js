@@ -97,6 +97,8 @@ class PresetsToggle extends QuickMenuToggle {
                 return;
             if (error instanceof DdcutilMissingError) {
                 Main.notify(_('Brightness preset'), _('Install ddcutil to control your monitors.'));
+            } else if (error instanceof NoMonitorsError && error.unreachable.length > 0) {
+                Main.notify(_('Brightness preset'), describeProblems([], error.unreachable));
             } else if (error instanceof NoMonitorsError) {
                 Main.notify(_('Brightness preset'),
                     _('No monitor answered over DDC/CI. Check that DDC/CI is on in each monitor’s own menu.'));

@@ -18,7 +18,7 @@ function assertEqual(actual, expected) {
         throw new Error(`expected ${e}\n       got ${a}`);
 }
 
-function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, busyDisplay = false, laptopPanel = false} = {}) {
+function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, busyDisplay = false, laptopPanel = false, answeringDisplays = true} = {}) {
     const [fd, log] = GLib.file_open_tmp('ddcutil-XXXXXX.log');
     GLib.close(fd);
     GLib.setenv('PATH', `${fakeBin}:${systemPath}`, true);
@@ -28,6 +28,7 @@ function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, 
     GLib.setenv('FAKE_DDCUTIL_INVALID_DISPLAY', invalidDisplay ? '1' : '', true);
     GLib.setenv('FAKE_DDCUTIL_BUSY_DISPLAY', busyDisplay ? '1' : '', true);
     GLib.setenv('FAKE_DDCUTIL_LAPTOP_PANEL', laptopPanel ? '1' : '', true);
+    GLib.setenv('FAKE_DDCUTIL_NO_ANSWERING_DISPLAYS', answeringDisplays ? '' : '1', true);
     return () => new TextDecoder().decode(GLib.file_get_contents(log)[1]).trim().split('\n');
 }
 
@@ -216,6 +217,14 @@ test('no monitor answering is reported as such', async () => {
     const error = await rejection(new Monitors().setBrightness(50));
     assertEqual(error instanceof NoMonitorsError, true);
     assertEqual(calls().some(call => call.includes('setvcp')), false);
+});
+
+test('no monitor answering because every one is busy carries the busy displays', async () => {
+    const calls = useFakeDdcutil({busyDisplay: true, answeringDisplays: false});
+    const error = await rejection(new Monitors().setBrightness(50));
+    assertEqual(error instanceof NoMonitorsError, true);
+    assertEqual(error.unreachable, [{bus: 5, name: 'DP-3', reason: 'busy'}]);
+    assertEqual(calls().some(call => call.startsWith('--bus 5')), false);
 });
 
 test('a missing ddcutil is reported as such', async () => {

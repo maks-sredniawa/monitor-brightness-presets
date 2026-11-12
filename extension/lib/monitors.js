@@ -7,7 +7,12 @@ Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
 export class DdcutilMissingError extends Error {}
 
-export class NoMonitorsError extends Error {}
+export class NoMonitorsError extends Error {
+    constructor(unreachable) {
+        super('No monitor answered over DDC/CI');
+        this.unreachable = unreachable;
+    }
+}
 
 export function isCancelled(error) {
     return error instanceof GLib.Error &&
@@ -72,7 +77,7 @@ export class Monitors {
                 displays.push({bus, name, max: maxima[i]});
         });
         if (displays.length === 0)
-            throw new NoMonitorsError('No monitor answered over DDC/CI');
+            throw new NoMonitorsError(unreachable);
         return {displays, unreachable};
     }
 
