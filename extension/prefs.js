@@ -18,23 +18,32 @@ export default class MonitorBrightnessPresetsPreferences extends ExtensionPrefer
         window.add(page);
 
         const rows = [];
+        let activeRow;
+        let written = settings.get_string('active-preset');
         const save = () => {
             for (const row of rows) {
                 row.name = row.entry.text.trim();
                 row.percent = row.spin.get_value_as_int();
             }
-            const {presets, saved, duplicates, active} = collectPresets(rows, settings.get_string('active-preset'));
+            const {presets, duplicates, active} = collectPresets(rows, activeRow);
             for (const row of rows) {
                 if (duplicates.has(row))
                     row.entry.add_css_class('error');
                 else
                     row.entry.remove_css_class('error');
             }
-            for (const row of saved)
-                row.savedName = row.name;
             settings.set_value('presets', new GLib.Variant('a(si)', presets));
-            if (active !== settings.get_string('active-preset'))
+            if (active !== settings.get_string('active-preset')) {
+                written = active;
                 settings.set_string('active-preset', active);
+            }
+        };
+        const followShell = () => {
+            const active = settings.get_string('active-preset');
+            if (active === written)
+                return;
+            written = active;
+            activeRow = collectPresets(rows).saved.find(row => row.name === active);
         };
 
         const addRow = (name, percent) => {
@@ -52,7 +61,7 @@ export default class MonitorBrightnessPresetsPreferences extends ExtensionPrefer
             entry.add_suffix(new Gtk.Label({label: '%'}));
             entry.add_suffix(remove);
 
-            const row = {entry, spin, savedName: name};
+            const row = {entry, spin, name, percent};
             rows.push(row);
             group.add(entry);
 
@@ -77,5 +86,8 @@ export default class MonitorBrightnessPresetsPreferences extends ExtensionPrefer
 
         for (const [name, percent] of settings.get_value('presets').deepUnpack())
             addRow(name, percent);
+        activeRow = rows.find(row => row.name === written);
+        const shellPicks = settings.connect('changed::active-preset', followShell);
+        window.connect('close-request', () => settings.disconnect(shellPicks));
     }
 }

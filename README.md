@@ -12,6 +12,7 @@ First version, in development. Runs on GNOME Shell 50.
 
 - [ddcutil](https://www.ddcutil.com/) 2.x, with access to the monitors' I²C buses: `sudo apt install ddcutil`, then log out and in again so its udev rule gives your session access.
 - DDC/CI turned on in each monitor's own on-screen menu.
+- No other program holding a monitor's I²C bus, such as the `ddcci` kernel module; a monitor that is busy this way is left as it is and named in the notification.
 
 ## Develop
 

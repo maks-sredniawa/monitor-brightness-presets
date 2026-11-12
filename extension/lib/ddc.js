@@ -1,11 +1,18 @@
 const BUILT_IN_PANEL = /^(eDP|LVDS|DSI)-/;
+const HEADERS = [
+    [/^Display \d+/, 'ok'],
+    [/^Invalid display/, 'invalid'],
+    [/^Busy display/, 'busy'],
+    [/^DDC[_ ]disabled/, 'disabled'],
+];
 
 export function parseDisplays(detectOutput) {
     const displays = [];
     let current = null;
     for (const line of detectOutput.split('\n')) {
-        if (/^(Display \d+|Invalid display)/.test(line)) {
-            current = {bus: null, name: '', valid: line.startsWith('Display'), connector: ''};
+        const status = HEADERS.find(([header]) => header.test(line))?.[1];
+        if (status) {
+            current = {bus: null, name: '', status, connector: ''};
             displays.push(current);
         } else if (/^\S/.test(line)) {
             current = null;
@@ -25,8 +32,8 @@ export function parseDisplays(detectOutput) {
     }
     return displays
         .filter(display => display.bus !== null)
-        .filter(display => display.valid || !BUILT_IN_PANEL.test(display.connector))
-        .map(({bus, name, valid}) => ({bus, name: name || `I2C bus ${bus}`, valid}));
+        .filter(display => display.status === 'ok' || !BUILT_IN_PANEL.test(display.connector))
+        .map(({bus, name, status}) => ({bus, name: name || `I2C bus ${bus}`, status}));
 }
 
 export function parseBrightness(getvcpOutput) {

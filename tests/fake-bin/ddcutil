@@ -23,6 +23,15 @@ Invalid display
       Mfg id:               XXX
 OUT
     fi
+    if [[ -n "$FAKE_DDCUTIL_BUSY_DISPLAY" ]]; then
+      cat <<'OUT'
+
+Busy display
+   I2C bus:  /dev/i2c-5
+   DRM_connector:           card1-DP-3
+   I2C device is busy
+OUT
+    fi
     if [[ -n "$FAKE_DDCUTIL_LAPTOP_PANEL" ]]; then
       cat <<'OUT'
 

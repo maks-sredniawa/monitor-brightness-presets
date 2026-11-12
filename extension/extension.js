@@ -23,11 +23,19 @@ function describeProblems(failed, unreachable) {
             '%s did not change their brightness. Their own menus may be locking them, for example an ECO mode or picture preset.',
             failed.length).format(listNames(failed)));
     }
-    if (unreachable.length > 0) {
+    const busy = unreachable.filter(display => display.reason === 'busy');
+    const silent = unreachable.filter(display => display.reason !== 'busy');
+    if (busy.length > 0) {
+        sentences.push(ngettext(
+            '%s is in use by another program, such as the ddcci kernel module, so it was left as it is.',
+            '%s are in use by another program, such as the ddcci kernel module, so they were left as they are.',
+            busy.length).format(listNames(busy)));
+    }
+    if (silent.length > 0) {
         sentences.push(ngettext(
             '%s did not answer over DDC/CI. Check that DDC/CI is on in its own menu.',
             '%s did not answer over DDC/CI. Check that DDC/CI is on in each one’s own menu.',
-            unreachable.length).format(listNames(unreachable)));
+            silent.length).format(listNames(silent)));
     }
     return sentences.join(' ');
 }

@@ -18,7 +18,7 @@ function assertEqual(actual, expected) {
         throw new Error(`expected ${e}\n       got ${a}`);
 }
 
-function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, laptopPanel = false} = {}) {
+function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, busyDisplay = false, laptopPanel = false} = {}) {
     const [fd, log] = GLib.file_open_tmp('ddcutil-XXXXXX.log');
     GLib.close(fd);
     GLib.setenv('PATH', `${fakeBin}:${systemPath}`, true);
@@ -26,6 +26,7 @@ function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, 
     GLib.setenv('FAKE_DDCUTIL_FAIL_BUS', failBus, true);
     GLib.setenv('FAKE_DDCUTIL_GETVCP_FAIL', getvcpFail, true);
     GLib.setenv('FAKE_DDCUTIL_INVALID_DISPLAY', invalidDisplay ? '1' : '', true);
+    GLib.setenv('FAKE_DDCUTIL_BUSY_DISPLAY', busyDisplay ? '1' : '', true);
     GLib.setenv('FAKE_DDCUTIL_LAPTOP_PANEL', laptopPanel ? '1' : '', true);
     return () => new TextDecoder().decode(GLib.file_get_contents(log)[1]).trim().split('\n');
 }
@@ -41,7 +42,7 @@ async function rejection(promise) {
 
 const detections = calls => calls().filter(call => call === 'detect --terse').length;
 
-test('parseDisplays keeps every external display with its bus, model and validity', () => {
+test('parseDisplays keeps every external display with its bus, model and status', () => {
     const output = `Display 1
    I2C bus:  /dev/i2c-4
    Monitor:                 GSM:LG ULTRAGEAR:
@@ -66,12 +67,29 @@ Invalid display
 Phantom display
    I2C bus:  /dev/i2c-10
    Monitor:                 GSM:LG ULTRAGEAR:
+
+Busy display
+   I2C bus:          /dev/i2c-11
+   DRM_connector:    card1-DP-4
+   I2C device is busy
+
+DDC_disabled
+   I2C bus:          /dev/i2c-12
+   DRM_connector:    card1-HDMI-A-2
+   Monitor:          DEL:U2720Q:
+   DDC communication disabled
+
+Busy display
+   I2C bus:          /dev/i2c-2
+   DRM_connector:    card1-eDP-2
 `;
     assertEqual(parseDisplays(output), [
-        {bus: 4, name: 'LG ULTRAGEAR', valid: true},
-        {bus: 7, name: 'Broken', valid: false},
-        {bus: 6, name: 'IVM', valid: true},
-        {bus: 9, name: 'DP-3', valid: false},
+        {bus: 4, name: 'LG ULTRAGEAR', status: 'ok'},
+        {bus: 7, name: 'Broken', status: 'invalid'},
+        {bus: 6, name: 'IVM', status: 'ok'},
+        {bus: 9, name: 'DP-3', status: 'invalid'},
+        {bus: 11, name: 'DP-4', status: 'busy'},
+        {bus: 12, name: 'U2720Q', status: 'disabled'},
     ]);
 });
 
@@ -126,19 +144,45 @@ test('a failed write makes the next preset detect the monitors again', async () 
     assertEqual(detections(calls), 2);
 });
 
+test('a monitor that keeps rejecting writes after a fresh detection stops causing detections', async () => {
+    const calls = useFakeDdcutil({failBus: '6'});
+    const monitors = new Monitors();
+    for (const percent of [50, 60, 70, 80])
+        await monitors.setBrightness(percent);
+    assertEqual(detections(calls), 2);
+});
+
+test('a monitor that newly fails makes the next preset detect again', async () => {
+    const calls = useFakeDdcutil({failBus: '6'});
+    const monitors = new Monitors();
+    await monitors.setBrightness(50);
+    await monitors.setBrightness(60);
+    GLib.setenv('FAKE_DDCUTIL_FAIL_BUS', '4', true);
+    await monitors.setBrightness(70);
+    await monitors.setBrightness(80);
+    assertEqual(detections(calls), 3);
+});
+
 test('a monitor that does not answer is named and the others still change', async () => {
     const calls = useFakeDdcutil({getvcpFail: '6'});
     const result = await new Monitors().setBrightness(50);
     assertEqual(result.displays.map(display => display.name), ['LG ULTRAGEAR']);
-    assertEqual(result.unreachable.map(display => display.name), ['PL2745Q']);
+    assertEqual(result.unreachable, [{bus: 6, name: 'PL2745Q', reason: 'silent'}]);
     assertEqual(calls().filter(call => call.includes('setvcp')), ['--bus 4 setvcp 10 50']);
 });
 
 test('an invalid display is named without being asked for its brightness', async () => {
     const calls = useFakeDdcutil({invalidDisplay: true});
     const result = await new Monitors().setBrightness(50);
-    assertEqual(result.unreachable, [{bus: 7, name: 'DP-2'}]);
+    assertEqual(result.unreachable, [{bus: 7, name: 'DP-2', reason: 'invalid'}]);
     assertEqual(calls().some(call => call.startsWith('--bus 7')), false);
+});
+
+test('a busy display is named as busy without being asked for its brightness', async () => {
+    const calls = useFakeDdcutil({busyDisplay: true});
+    const result = await new Monitors().setBrightness(50);
+    assertEqual(result.unreachable, [{bus: 5, name: 'DP-3', reason: 'busy'}]);
+    assertEqual(calls().some(call => call.startsWith('--bus 5')), false);
 });
 
 test('a laptop panel is neither reported nor keeps the detection from being reused', async () => {
@@ -173,34 +217,43 @@ test('a missing ddcutil is reported as such', async () => {
     assertEqual(error instanceof DdcutilMissingError, true);
 });
 
-const row = (name, percent, savedName = name) => ({name, percent, savedName});
+const row = (name, percent) => ({name, percent});
 
 test('renaming the active preset carries the active preset over', () => {
-    const rows = [row('Day', 100), row('Late', 25, 'Night')];
-    const result = collectPresets(rows, 'Night');
+    const night = row('Late', 25);
+    const result = collectPresets([row('Day', 100), night], night);
     assertEqual(result.presets, [['Day', 100], ['Late', 25]]);
     assertEqual(result.active, 'Late');
 });
 
-test('a preset whose name is cleared keeps the active name for when it is retyped', () => {
-    const rows = [row('Day', 100), row('', 25, 'Night')];
-    const result = collectPresets(rows, 'Night');
-    assertEqual(result.presets, [['Day', 100]]);
-    assertEqual(result.active, 'Night');
+test('a preset whose name is cleared is unticked, and ticked again when it is retyped', () => {
+    const night = row('', 25);
+    const rows = [row('Day', 100), night];
+    assertEqual(collectPresets(rows, night).presets, [['Day', 100]]);
+    assertEqual(collectPresets(rows, night).active, '');
+    night.name = 'Night';
+    assertEqual(collectPresets(rows, night).active, 'Night');
 });
 
-test('a duplicate name is flagged, not saved, and does not take the active preset', () => {
-    const rows = [row('Day', 100), row('Day', 25, 'Night')];
-    const result = collectPresets(rows, 'Night');
+test('a duplicate name is flagged and not saved', () => {
+    const rows = [row('Day', 100), row('Day', 25)];
+    const result = collectPresets(rows);
     assertEqual(result.presets, [['Day', 100]]);
     assertEqual([...result.duplicates].map(r => r.percent), [25]);
     assertEqual(result.saved.map(r => r.percent), [100]);
-    assertEqual(result.active, 'Night');
+});
+
+test('typing the active name into a row above it ticks neither, until the clash is gone', () => {
+    const day = row('Night', 100);
+    const night = row('Night', 25);
+    const rows = [day, night];
+    assertEqual(collectPresets(rows, night).active, '');
+    day.name = 'Day';
+    assertEqual(collectPresets(rows, night).active, 'Night');
 });
 
 test('naming a new preset does not mark it active when none is', () => {
-    const rows = [row('Day', 100), row('Dusk', 40, '')];
-    assertEqual(collectPresets(rows, '').active, '');
+    assertEqual(collectPresets([row('Day', 100), row('Dusk', 40)]).active, '');
 });
 
 const loop = new GLib.MainLoop(null, false);

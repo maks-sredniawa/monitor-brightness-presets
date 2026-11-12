@@ -34,6 +34,7 @@ export class Monitors {
     constructor() {
         this._cancellable = new Gio.Cancellable();
         this._detection = null;
+        this._failingBuses = new Set();
         this._applying = null;
         this._pendingPercent = null;
     }
@@ -55,12 +56,12 @@ export class Monitors {
     async _detect() {
         const detected = parseDisplays(await ddcutil(['detect', '--terse'], this._cancellable));
         const maxima = await Promise.all(detected.map(display =>
-            display.valid ? this._readMax(display.bus) : null));
+            display.status === 'ok' ? this._readMax(display.bus) : null));
         const displays = [];
         const unreachable = [];
-        detected.forEach(({bus, name}, i) => {
+        detected.forEach(({bus, name, status}, i) => {
             if (maxima[i] === null)
-                unreachable.push({bus, name});
+                unreachable.push({bus, name, reason: status === 'ok' ? 'silent' : status});
             else
                 displays.push({bus, name, max: maxima[i]});
         });
@@ -106,8 +107,11 @@ export class Monitors {
             ddcutil(['--bus', `${display.bus}`, 'setvcp', '10',
                 `${percentToValue(percent, display.max)}`], this._cancellable)));
         const failed = displays.filter((_display, i) => outcomes[i].status === 'rejected');
-        if (failed.length > 0)
+        // A monitor that rejects writes on a fresh detection too is ignoring DDC writes,
+        // not sitting on a stale bus, so detecting again for it would only slow every pick.
+        if (failed.some(display => !this._failingBuses.has(display.bus)))
             this.forget();
+        this._failingBuses = new Set(failed.map(display => display.bus));
         return {displays, failed, unreachable};
     }
 

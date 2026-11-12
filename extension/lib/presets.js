@@ -1,4 +1,4 @@
-export function collectPresets(rows, active) {
+export function collectPresets(rows, activeRow) {
     const owners = new Map();
     const duplicates = new Set();
     for (const row of rows) {
@@ -9,12 +9,10 @@ export function collectPresets(rows, active) {
         else
             owners.set(row.name, row);
     }
-    const activeRow = active ? rows.find(row => row.savedName === active) : undefined;
-    const followsRename = activeRow && owners.get(activeRow.name) === activeRow;
     return {
         presets: [...owners.values()].map(row => [row.name, row.percent]),
         saved: [...owners.values()],
         duplicates,
-        active: followsRename ? activeRow.name : active,
+        active: activeRow && owners.get(activeRow.name) === activeRow ? activeRow.name : '',
     };
 }
