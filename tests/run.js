@@ -195,6 +195,14 @@ test('a laptop panel is neither reported nor keeps the detection from being reus
     assertEqual(detections(calls), 1);
 });
 
+test('a busy display does not keep the detection from being reused', async () => {
+    const calls = useFakeDdcutil({busyDisplay: true});
+    const monitors = new Monitors();
+    await monitors.setBrightness(50);
+    await monitors.setBrightness(60);
+    assertEqual(detections(calls), 1);
+});
+
 test('a detection with a monitor that did not answer is not reused', async () => {
     const calls = useFakeDdcutil({getvcpFail: '6'});
     const monitors = new Monitors();

@@ -30,6 +30,13 @@ async function ddcutil(args, cancellable) {
     return stdout;
 }
 
+// A silent, invalid or DDC-disabled monitor may be waking up or just had DDC/CI
+// turned on in its menu, so only a bus another driver holds is worth skipping
+// until the monitor layout changes.
+function isHeldByAnotherDriver(display) {
+    return display.reason === 'busy';
+}
+
 export class Monitors {
     constructor() {
         this._cancellable = new Gio.Cancellable();
@@ -47,8 +54,7 @@ export class Monitors {
         if (this._detection)
             return this._detection;
         const detection = await this._detect();
-        // A monitor that did not answer may only be waking up, so ask again next time.
-        if (detection.unreachable.length === 0)
+        if (detection.unreachable.every(isHeldByAnotherDriver))
             this._detection = detection;
         return detection;
     }
