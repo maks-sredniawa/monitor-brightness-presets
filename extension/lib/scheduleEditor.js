@@ -150,15 +150,22 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
     };
     const written = () => normalizeSchedule(savedRows().map(row => [row.minutes, row.preset]));
 
+    const duplicateNote = _('Another time in the list is the same, so this one is not saved.');
     const flagDuplicates = () => {
         const saved = new Set(savedRows());
         for (const row of rows) {
             if (saved.has(row)) {
                 row.button.remove_css_class('error');
                 row.button.tooltip_text = null;
+                row.button.reset_state(Gtk.AccessibleState.INVALID);
+                row.button.reset_property(Gtk.AccessibleProperty.DESCRIPTION);
+                row.combo.subtitle = '';
             } else {
                 row.button.add_css_class('error');
-                row.button.tooltip_text = _('Another time in the list is the same, so this one is not saved.');
+                row.button.tooltip_text = duplicateNote;
+                row.button.update_state([Gtk.AccessibleState.INVALID], [Gtk.AccessibleInvalidState.TRUE]);
+                row.button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [duplicateNote]);
+                row.combo.subtitle = _('Same time as above, not saved');
             }
         }
     };
@@ -172,6 +179,8 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
         const text = formatTime(minutes, clockFormat(clock));
         row.button.label = text;
         row.button.update_property([Gtk.AccessibleProperty.LABEL], [format(_('Time, %s'), text)]);
+        row.combo.update_property([Gtk.AccessibleProperty.LABEL], [format(_('Preset at %s'), text)]);
+        row.remove.update_property([Gtk.AccessibleProperty.LABEL], [format(_('Remove %s'), text)]);
     };
 
     const fillCombo = row => {
@@ -247,7 +256,12 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
         const row = {minutes, preset};
         row.items = new Gtk.StringList();
         row.combo = new Adw.ComboRow({use_subtitle: false, model: row.items});
-        row.combo.update_property([Gtk.AccessibleProperty.LABEL], [_('Preset')]);
+        row.remove = new Gtk.Button({
+            icon_name: 'user-trash-symbolic',
+            tooltip_text: _('Remove time'),
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
 
         const picker = buildTimePicker(minutes, clockFormat(clock) === '12h', value => showTime(row, value), _);
         row.picker = picker;
@@ -263,13 +277,7 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
             accessible_role: Gtk.AccessibleRole.PRESENTATION,
         });
         row.combo.add_suffix(row.warning);
-        const remove = new Gtk.Button({
-            icon_name: 'user-trash-symbolic',
-            tooltip_text: _('Remove time'),
-            valign: Gtk.Align.CENTER,
-            css_classes: ['flat'],
-        });
-        row.combo.add_suffix(remove);
+        row.combo.add_suffix(row.remove);
         fillCombo(row);
 
         picker.popover.connect('show', () => openPopovers++);
@@ -302,10 +310,13 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
                 });
             }
         });
-        remove.connect('clicked', () => {
-            rows.splice(rows.indexOf(row), 1);
+        row.remove.connect('clicked', () => {
+            const index = rows.indexOf(row);
+            rows.splice(index, 1);
+            const neighbour = rows[index] ?? rows[index - 1];
             layout();
             save();
+            (neighbour?.combo ?? add).grab_focus();
         });
         return row;
     };

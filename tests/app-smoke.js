@@ -21,6 +21,24 @@ function useFake(env = {}) {
     GLib.file_set_contents(log, '');
 }
 
+const accessible = new WeakMap();
+const spy = (method, record) => {
+    const original = Gtk.Accessible.prototype[method];
+    Gtk.Accessible.prototype[method] = function (...args) {
+        const state = accessible.get(this) ?? {};
+        record(state, ...args);
+        accessible.set(this, state);
+        return original.apply(this, args);
+    };
+};
+spy('update_property', (state, keys, values) => keys.forEach((key, i) => (state[`property ${key}`] = values[i])));
+spy('reset_property', (state, key) => delete state[`property ${key}`]);
+spy('update_state', (state, keys, values) => keys.forEach((key, i) => (state[`state ${key}`] = values[i])));
+spy('reset_state', (state, key) => delete state[`state ${key}`]);
+const accessibleLabel = widget => accessible.get(widget)?.[`property ${Gtk.AccessibleProperty.LABEL}`] ?? null;
+const accessibleDescription = widget => accessible.get(widget)?.[`property ${Gtk.AccessibleProperty.DESCRIPTION}`] ?? null;
+const markedInvalid = widget => accessible.get(widget)?.[`state ${Gtk.AccessibleState.INVALID}`] === Gtk.AccessibleInvalidState.TRUE;
+
 const calls = () => new TextDecoder().decode(GLib.file_get_contents(log)[1]).trim().split('\n').filter(Boolean);
 const writes = () => calls().filter(call => call.includes('setvcp'));
 
@@ -439,6 +457,8 @@ step('changing a time saves it when the picker closes and keeps the rows sorted'
         assertEqual(writes, [[[1350, 'Night'], [1395, 'Day']]], 'one write, on close');
         assertEqual(timeRows(dialog).map(row => timeButton(row).label), ['22:30', '23:15'], 'sorted rows');
         assertEqual(holdsFocus(timeButton(day)), true, 'focus back on the time button');
+        assertEqual([accessibleLabel(day), accessibleLabel(buttonWith(day, 'user-trash-symbolic'))],
+            ['Preset at 23:15', 'Remove 23:15'], 'names follow the time');
     } finally {
         dialog.force_close();
     }
@@ -454,9 +474,14 @@ step('a duplicate time is flagged and not saved until it changes', async (win, s
         assertEqual([first.selected, second.selected], [0, 2], 'the row that had the time first stays on top');
         assertEqual([timeButton(first).has_css_class('error'), timeButton(second).has_css_class('error')], [false, true], 'flag');
         assertEqual(timeButton(second).tooltip_text, 'Another time in the list is the same, so this one is not saved.', 'tooltip');
+        assertEqual([first.subtitle, second.subtitle], ['', 'Same time as above, not saved'], 'visible note');
+        assertEqual([markedInvalid(timeButton(first)), markedInvalid(timeButton(second))], [false, true], 'invalid for assistive tech');
+        assertEqual(accessibleDescription(timeButton(second)), 'Another time in the list is the same, so this one is not saved.', 'reason');
         assertEqual(schedule(settings), [[450, 'Day']], 'saved');
         await setTime(second, 1200);
         assertEqual(timeButton(timeRows(dialog)[1]).has_css_class('error'), false, 'flag cleared');
+        assertEqual([timeRows(dialog)[1].subtitle, markedInvalid(timeButton(timeRows(dialog)[1])),
+            accessibleDescription(timeButton(timeRows(dialog)[1]))], ['', false, null], 'note cleared');
         assertEqual(schedule(settings), [[450, 'Day'], [1200, 'Night']], 'saved once unique');
     } finally {
         dialog.force_close();
@@ -474,6 +499,28 @@ step('picking a preset saves it and removing a time drops it', async (win, setti
         assertEqual(timeRows(dialog).length, 1, 'rows');
         buttonWith(timeRows(dialog)[0], 'user-trash-symbolic').emit('clicked');
         assertEqual(placeholders(dialog).map(row => row.title), ['No times'], 'empty again');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('each time row names its controls by the time, and removing one moves focus to its neighbour', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1080, 'Evening'], [1350, 'Night']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        const removeOf = row => buttonWith(row, 'user-trash-symbolic');
+        assertEqual(timeRows(dialog).map(row => [accessibleLabel(row), accessibleLabel(removeOf(row))]),
+            [['Preset at 07:30', 'Remove 07:30'], ['Preset at 18:00', 'Remove 18:00'], ['Preset at 22:30', 'Remove 22:30']], 'names');
+        const [day, evening, night] = timeRows(dialog);
+        removeOf(day).grab_focus();
+        removeOf(day).emit('clicked');
+        assertEqual(holdsFocus(evening), true, 'next row');
+        removeOf(night).grab_focus();
+        removeOf(night).emit('clicked');
+        assertEqual(holdsFocus(evening), true, 'previous row when it was the last');
+        removeOf(evening).emit('clicked');
+        assertEqual(holdsFocus(buttonWith(dialog, 'list-add-symbolic')), true, 'add button once empty');
+        assertEqual(schedule(settings), [], 'all removed');
     } finally {
         dialog.force_close();
     }
@@ -533,9 +580,15 @@ step('renaming a preset carries its times along, in the same write as the preset
         assertEqual(schedule(settings).map(([, preset]) => preset), ['Day', 'Evening', 'Day'], 'kept while unnamed');
         day.text = 'Daylight';
         assertEqual(pairs.at(-1), ['Daylight,Evening,Night', 'Daylight,Evening,Daylight'], 'carried in one write');
-        descendants(dialog, Adw.EntryRow)[1].text = 'Daylight';
+        const evening = descendants(dialog, Adw.EntryRow)[1];
+        evening.text = 'Daylight';
         assertEqual(schedule(settings).map(([, preset]) => preset), ['Daylight', 'Evening', 'Daylight'], 'a duplicate carries nothing');
-        descendants(dialog, Adw.EntryRow)[1].text = 'Evening';
+        assertEqual([day.title, evening.title], ['Name', 'Same name as above, not saved'], 'visible note');
+        assertEqual([markedInvalid(day), markedInvalid(evening), accessibleDescription(evening)],
+            [false, true, 'Another preset above has the same name, so this one is not saved.'], 'invalid for assistive tech');
+        evening.text = 'Evening';
+        assertEqual([evening.title, markedInvalid(evening), accessibleDescription(evening)], ['Name', false, null], 'note cleared');
+        assertEqual(accessibleLabel(buttonWith(evening, 'user-trash-symbolic')), 'Remove Evening', 'remove named by the preset');
         buttonWith(descendants(dialog, Adw.EntryRow)[1], 'user-trash-symbolic').emit('clicked');
         assertEqual(schedule(settings).map(([, preset]) => preset), ['Daylight', 'Evening', 'Daylight'], 'removing leaves its times');
     } finally {
@@ -543,6 +596,25 @@ step('renaming a preset carries its times along, in the same write as the preset
         dialog.force_close();
     }
     settings.set_value('presets', new GLib.Variant('a(si)', PRESETS));
+});
+
+step('removing a preset moves focus to the next row, else the previous, else the add button', async (win, settings) => {
+    win.activate_action('edit-presets', null);
+    await until(() => win.get_visible_dialog() !== null, 'edit dialog');
+    const dialog = win.get_visible_dialog();
+    try {
+        const removeOf = row => buttonWith(row, 'user-trash-symbolic');
+        const [day, evening, night] = descendants(dialog, Adw.EntryRow);
+        removeOf(day).emit('clicked');
+        assertEqual(holdsFocus(evening), true, 'next row');
+        removeOf(night).emit('clicked');
+        assertEqual(holdsFocus(evening), true, 'previous row when it was the last');
+        removeOf(evening).emit('clicked');
+        assertEqual(holdsFocus(buttonWith(dialog, 'list-add-symbolic')), true, 'add button once empty');
+    } finally {
+        dialog.force_close();
+        settings.set_value('presets', new GLib.Variant('a(si)', PRESETS));
+    }
 });
 
 step('a preset picked by hand while the schedule is on marks the current time as handled', async (win, settings) => {

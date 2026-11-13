@@ -98,8 +98,11 @@ export function buildPresetsEditor(settings, _) {
     writer.delay();
 
     const contrastButtons = new Gtk.SizeGroup({mode: Gtk.SizeGroupMode.HORIZONTAL});
+    const duplicateNote = _('Another preset above has the same name, so this one is not saved.');
     const rows = [];
     let activeRow;
+    const nameRemove = row => row.remove.update_property([Gtk.AccessibleProperty.LABEL],
+        [row.name ? format(_('Remove %s'), row.name) : _('Remove preset')]);
     let written = settings.get_string('active-preset');
     const save = () => {
         for (const row of rows) {
@@ -109,10 +112,18 @@ export function buildPresetsEditor(settings, _) {
         }
         const {presets, contrasts, duplicates, renames, saved, active} = collectPresets(rows, activeRow);
         for (const row of rows) {
-            if (duplicates.has(row))
+            if (duplicates.has(row)) {
                 row.entry.add_css_class('error');
-            else
+                row.entry.title = _('Same name as above, not saved');
+                row.entry.update_state([Gtk.AccessibleState.INVALID], [Gtk.AccessibleInvalidState.TRUE]);
+                row.entry.update_property([Gtk.AccessibleProperty.DESCRIPTION], [duplicateNote]);
+            } else {
                 row.entry.remove_css_class('error');
+                row.entry.title = _('Name');
+                row.entry.reset_state(Gtk.AccessibleState.INVALID);
+                row.entry.reset_property(Gtk.AccessibleProperty.DESCRIPTION);
+            }
+            nameRemove(row);
         }
         writer.set_value('presets', new GLib.Variant('a(si)', presets));
         writer.set_value('preset-contrast', new GLib.Variant('a{si}', contrasts));
@@ -154,17 +165,21 @@ export function buildPresetsEditor(settings, _) {
         entry.add_suffix(contrastControl.button);
         entry.add_suffix(remove);
 
-        const row = {entry, spin, contrastControl, name, savedName: name, percent, contrast};
+        const row = {entry, spin, remove, contrastControl, name, savedName: name, percent, contrast};
+        nameRemove(row);
         rows.push(row);
         group.add(entry);
 
         entry.connect('changed', save);
         spin.connect('value-changed', save);
         remove.connect('clicked', () => {
-            rows.splice(rows.indexOf(row), 1);
+            const index = rows.indexOf(row);
+            rows.splice(index, 1);
+            const neighbour = rows[index] ?? rows[index - 1];
             contrastButtons.remove_widget(contrastControl.button);
             group.remove(entry);
             save();
+            (neighbour?.entry ?? add).grab_focus();
         });
         return entry;
     };
