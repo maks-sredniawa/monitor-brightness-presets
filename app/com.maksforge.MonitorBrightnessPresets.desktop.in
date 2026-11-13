@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Brightness Presets
+Comment=Switch every monitor between brightness presets
+Exec=gjs -m @APP_DIR@/main.js
+Icon=com.maksforge.MonitorBrightnessPresets
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=brightness;monitor;display;screen;DDC;night;
+StartupNotify=true

@@ -17,3 +17,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gjs libglib2.0-bin
       - run: make test
       - run: make schemas
+
+  app:
+    name: App smoke test
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: apt-get update && apt-get install -y --no-install-recommends gjs gir1.2-adw-1 gir1.2-gtk-4.0 libglib2.0-bin xvfb xauth make
+      - run: make smoke

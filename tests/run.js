@@ -1,7 +1,7 @@
 import GLib from 'gi://GLib';
 import System from 'system';
 
-import {parseBrightness, parseDisplays, percentToValue} from '../extension/lib/ddc.js';
+import {parseBrightness, parseDisplays, percentToValue, valueToPercent} from '../extension/lib/ddc.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError} from '../extension/lib/monitors.js';
 import {collectPresets} from '../extension/lib/presets.js';
 
@@ -232,6 +232,112 @@ test('a missing ddcutil is reported as such', async () => {
     GLib.setenv('PATH', '/nonexistent', true);
     const error = await rejection(new Monitors().setBrightness(50));
     assertEqual(error instanceof DdcutilMissingError, true);
+});
+
+const writes = calls => calls().filter(call => call.includes('setvcp'));
+
+test('valueToPercent turns a monitor value back into a percent of its maximum', () => {
+    assertEqual([valueToPercent(30, 50), valueToPercent(64, 255), valueToPercent(5, 0)], [60, 25, 0]);
+});
+
+test('read gives every monitor its current brightness as a percent of its maximum', async () => {
+    useFakeDdcutil();
+    const result = await new Monitors().read();
+    assertEqual(result.displays.map(({bus, name, percent}) => ({bus, name, percent})), [
+        {bus: 4, name: 'LG ULTRAGEAR', percent: 70},
+        {bus: 6, name: 'PL2745Q', percent: 40},
+    ]);
+    assertEqual(result.unreachable, []);
+});
+
+test('read names a monitor that stopped answering and detects again next time', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await monitors.read();
+    GLib.setenv('FAKE_DDCUTIL_GETVCP_FAIL', '6', true);
+    const result = await monitors.read();
+    assertEqual(result.displays.map(display => display.bus), [4]);
+    assertEqual(result.unreachable, [{bus: 6, name: 'PL2745Q', reason: 'silent'}]);
+    await monitors.read();
+    assertEqual(detections(calls), 2);
+});
+
+test('setMonitorBrightness sets only that monitor, scaled to its maximum', async () => {
+    const calls = useFakeDdcutil();
+    const result = await new Monitors().setMonitorBrightness(6, 60);
+    assertEqual(result.displays.map(display => display.bus), [6]);
+    assertEqual(result.failed, []);
+    assertEqual(writes(calls), ['--bus 6 setvcp 10 30']);
+});
+
+test('setMonitorBrightness reports a monitor that rejects the write', async () => {
+    useFakeDdcutil({failBus: '6'});
+    const result = await new Monitors().setMonitorBrightness(6, 60);
+    assertEqual(result.failed.map(display => display.name), ['PL2745Q']);
+});
+
+test('setMonitorBrightness for a monitor that is gone changes nothing', async () => {
+    const calls = useFakeDdcutil();
+    const result = await new Monitors().setMonitorBrightness(9, 60);
+    assertEqual(result.displays, []);
+    assertEqual(writes(calls), []);
+});
+
+test('dragging one slider leaves its last value applied without dropping another monitor', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await Promise.all([
+        monitors.setMonitorBrightness(4, 10),
+        monitors.setMonitorBrightness(4, 20),
+        monitors.setMonitorBrightness(6, 50),
+        monitors.setMonitorBrightness(4, 30),
+    ]);
+    assertEqual(writes(calls).filter(call => call.startsWith('--bus 4')).at(-1), '--bus 4 setvcp 10 30');
+    assertEqual(writes(calls).includes('--bus 6 setvcp 10 25'), true);
+});
+
+test('a preset replaces waiting single-monitor writes and hands their callers its result', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    const first = monitors.setBrightness(100);
+    const dragged = monitors.setMonitorBrightness(6, 10);
+    const preset = monitors.setBrightness(60);
+    await first;
+    assertEqual((await dragged).displays.length, 2);
+    await preset;
+    assertEqual(writes(calls).some(call => call === '--bus 6 setvcp 10 5'), false);
+    assertEqual(writes(calls).slice(-2).sort(), ['--bus 4 setvcp 10 60', '--bus 6 setvcp 10 30']);
+});
+
+test('a single-monitor write after a waiting preset still applies after it', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await Promise.all([
+        monitors.setBrightness(100),
+        monitors.setBrightness(60),
+        monitors.setMonitorBrightness(6, 10),
+    ]);
+    assertEqual(writes(calls).at(-1), '--bus 6 setvcp 10 5');
+});
+
+test('reads wait for writes so ddcutil never talks to a monitor twice at once', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await monitors.read();
+    const before = calls().length;
+    await Promise.all([monitors.setBrightness(60), monitors.read()]);
+    assertEqual(calls().slice(before).map(call => call.split(' ')[2]), ['setvcp', 'setvcp', 'getvcp', 'getvcp']);
+});
+
+test('a failed job does not stop the ones queued behind it', async () => {
+    useFakeDdcutil();
+    const monitors = new Monitors();
+    GLib.setenv('PATH', '/nonexistent', true);
+    const failing = rejection(monitors.setBrightness(50));
+    GLib.setenv('PATH', `${fakeBin}:${systemPath}`, true);
+    const next = monitors.setMonitorBrightness(4, 30);
+    assertEqual((await failing) instanceof DdcutilMissingError, true);
+    assertEqual((await next).failed, []);
 });
 
 const row = (name, percent) => ({name, percent});
