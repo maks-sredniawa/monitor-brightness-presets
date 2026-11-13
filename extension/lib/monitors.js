@@ -1,7 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {parseBrightness, parseDisplays, percentToValue, valueToPercent} from './ddc.js';
+import {BRIGHTNESS, CONTRAST, parseDisplays, parseVcp, percentToValue, valueToPercent} from './ddc.js';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
@@ -42,10 +42,15 @@ function isHeldByAnotherDriver(display) {
     return display.reason === 'busy';
 }
 
+const FEATURES = {brightness: BRIGHTNESS, contrast: CONTRAST};
+
 function covers(job, waiting) {
     if (job.kind !== waiting.kind)
         return false;
-    return job.kind === 'read' || job.bus === null || job.bus === waiting.bus;
+    if (job.kind === 'read')
+        return true;
+    return (job.bus === null || job.bus === waiting.bus) &&
+        Object.keys(waiting.values).every(feature => (job.values[feature] ?? null) !== null);
 }
 
 export class Monitors {
@@ -72,29 +77,32 @@ export class Monitors {
 
     async _detect() {
         const detected = parseDisplays(await ddcutil(['detect', '--terse'], this._cancellable));
-        const maxima = await Promise.all(detected.map(display =>
-            display.status === 'ok' ? this._readMax(display.bus) : null));
+        const readings = await Promise.all(detected.map(display =>
+            display.status === 'ok' ? this._readFeatures(display.bus) : null));
         const displays = [];
         const unreachable = [];
         detected.forEach(({bus, name, status}, i) => {
-            if (maxima[i] === null)
+            const brightness = readings[i]?.brightness;
+            if (!brightness)
                 unreachable.push({bus, name, reason: status === 'ok' ? 'silent' : status});
             else
-                displays.push({bus, name, max: maxima[i]});
+                displays.push({bus, name, max: brightness.max, contrastMax: readings[i].contrast?.max ?? null});
         });
         if (displays.length === 0)
             throw new NoMonitorsError(unreachable);
         return {displays, unreachable};
     }
 
-    async _readMax(bus) {
-        return (await this._readBrightness(bus))?.max ?? null;
+    async _readFeatures(bus, withContrast = true) {
+        const brightness = await this._readVcp(bus, BRIGHTNESS);
+        const contrast = brightness && withContrast ? await this._readVcp(bus, CONTRAST) : null;
+        return {brightness, contrast};
     }
 
-    async _readBrightness(bus) {
+    async _readVcp(bus, code) {
         try {
-            const output = await ddcutil(['--bus', `${bus}`, 'getvcp', '10', '--brief'], this._cancellable);
-            return parseBrightness(output);
+            const output = await ddcutil(['--bus', `${bus}`, 'getvcp', code, '--brief'], this._cancellable);
+            return parseVcp(output, code);
         } catch (error) {
             if (isCancelled(error))
                 throw error;
@@ -102,12 +110,24 @@ export class Monitors {
         }
     }
 
+    apply(values) {
+        return this._enqueue({kind: 'write', bus: null, values});
+    }
+
     setBrightness(percent) {
-        return this._enqueue({kind: 'write', bus: null, percent});
+        return this.apply({brightness: percent});
+    }
+
+    setMonitor(bus, values) {
+        return this._enqueue({kind: 'write', bus, values});
     }
 
     setMonitorBrightness(bus, percent) {
-        return this._enqueue({kind: 'write', bus, percent});
+        return this.setMonitor(bus, {brightness: percent});
+    }
+
+    setMonitorContrast(bus, percent) {
+        return this.setMonitor(bus, {contrast: percent});
     }
 
     read() {
@@ -135,7 +155,7 @@ export class Monitors {
             try {
                 const result = job.kind === 'read'
                     ? await this._readAll()
-                    : await this._write(job.bus, job.percent);
+                    : await this._write(job.bus, job.values);
                 job.callers.forEach(caller => caller.resolve(result));
             } catch (error) {
                 job.callers.forEach(caller => caller.reject(error));
@@ -144,13 +164,14 @@ export class Monitors {
         this._draining = false;
     }
 
-    async _write(bus, percent) {
+    async _write(bus, values) {
         const {displays, unreachable} = await this.list();
         const targets = bus === null ? displays : displays.filter(display => display.bus === bus);
-        const outcomes = await Promise.allSettled(targets.map(display =>
-            ddcutil(['--bus', `${display.bus}`, 'setvcp', '10',
-                `${percentToValue(percent, display.max)}`], this._cancellable)));
-        const failed = targets.filter((_display, i) => outcomes[i].status === 'rejected');
+        const outcomes = await Promise.all(targets.map(display => this._writeMonitor(display, values)));
+        const rejected = Object.fromEntries(targets
+            .map((display, i) => [display.bus, outcomes[i]])
+            .filter(([, features]) => features.length > 0));
+        const failed = targets.filter(display => display.bus in rejected);
         // A monitor that rejects writes on a fresh detection too is ignoring DDC writes,
         // not sitting on a stale bus, so detecting again for it would only slow every pick.
         if (failed.some(display => !this._failingBuses.has(display.bus)))
@@ -161,21 +182,47 @@ export class Monitors {
             else
                 this._failingBuses.delete(display.bus);
         }
-        return {displays: targets, failed, unreachable};
+        return {displays: targets, failed, rejected, unreachable};
+    }
+
+    async _writeMonitor(display, values) {
+        const rejected = [];
+        for (const [feature, percent] of Object.entries(values)) {
+            const max = feature === 'contrast' ? display.contrastMax : display.max;
+            if (percent === null || percent === undefined || max === null)
+                continue;
+            try {
+                await ddcutil(['--bus', `${display.bus}`, 'setvcp', FEATURES[feature],
+                    `${percentToValue(percent, max)}`], this._cancellable);
+            } catch (error) {
+                if (isCancelled(error))
+                    throw error;
+                rejected.push(feature);
+            }
+        }
+        return rejected;
     }
 
     async _readAll() {
         const {displays, unreachable} = await this.list();
-        const readings = await Promise.all(displays.map(display => this._readBrightness(display.bus)));
-        const silent = displays.filter((_display, i) => readings[i] === null);
+        const readings = await Promise.all(displays.map(display =>
+            this._readFeatures(display.bus, display.contrastMax !== null)));
+        const silent = displays.filter((_display, i) => readings[i].brightness === null);
         if (silent.length > 0)
             this.forget();
         return {
-            displays: displays.flatMap((display, i) => readings[i] === null ? [] : [{
-                ...display,
-                current: readings[i].current,
-                percent: valueToPercent(readings[i].current, readings[i].max),
-            }]),
+            displays: displays.flatMap((display, i) => {
+                const {brightness, contrast} = readings[i];
+                if (brightness === null)
+                    return [];
+                return [{
+                    ...display,
+                    current: brightness.current,
+                    percent: valueToPercent(brightness.current, brightness.max),
+                    contrastCurrent: contrast?.current ?? null,
+                    contrastPercent: contrast ? valueToPercent(contrast.current, contrast.max) : null,
+                }];
+            }),
             unreachable: [...unreachable, ...silent.map(({bus, name}) => ({bus, name, reason: 'silent'}))],
         };
     }

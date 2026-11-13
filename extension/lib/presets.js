@@ -9,10 +9,20 @@ export function collectPresets(rows, activeRow) {
         else
             owners.set(row.name, row);
     }
+    const saved = [...owners.values()];
     return {
-        presets: [...owners.values()].map(row => [row.name, row.percent]),
-        saved: [...owners.values()],
+        presets: saved.map(row => [row.name, row.percent]),
+        contrasts: Object.fromEntries(saved
+            .filter(row => row.contrast !== null && row.contrast !== undefined)
+            .map(row => [row.name, row.contrast])),
+        saved,
         duplicates,
         active: activeRow && owners.get(activeRow.name) === activeRow ? activeRow.name : '',
     };
+}
+
+export function readPresets(settings) {
+    const contrasts = settings.get_value('preset-contrast').deepUnpack();
+    return settings.get_value('presets').deepUnpack()
+        .map(([name, brightness]) => ({name, brightness, contrast: contrasts[name] ?? null}));
 }

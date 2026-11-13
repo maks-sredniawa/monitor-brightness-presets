@@ -7,7 +7,7 @@ ICON_DIR := $(DATA_DIR)/icons/hicolor
 
 .PHONY: test smoke schemas install install-app uninstall-app enable pack
 
-test:
+test: schemas
 	gjs -m tests/run.js
 
 smoke: schemas
@@ -33,4 +33,4 @@ enable:
 
 pack:
 	mkdir -p dist
-	gnome-extensions pack extension --extra-source=lib --force --out-dir=dist
+	gnome-extensions pack extension --extra-source=lib --extra-source=icons --force --out-dir=dist

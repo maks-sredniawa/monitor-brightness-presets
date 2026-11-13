@@ -5,8 +5,12 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk?version=4.0';
 
 import {percentToValue} from '../extension/lib/ddc.js';
+import {format} from '../extension/lib/format.js';
+import {contrastIcon} from '../extension/lib/icons.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from '../extension/lib/monitors.js';
+import {readPresets} from '../extension/lib/presets.js';
 import {buildPresetsEditor} from '../extension/lib/presetsEditor.js';
+import {acceptedBrightness} from '../extension/lib/problems.js';
 import {MonitorRow} from './monitorRow.js';
 
 const _ = text => text;
@@ -18,7 +22,6 @@ const HINTS = {
     disabled: _('DDC/CI is turned off. Turn it on in the monitor’s own menu, then refresh.'),
     busy: _('In use by another program, such as the ddcci kernel module, so it is left as it is.'),
 };
-const REJECTED = _('Did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.');
 const INSTALL_COMMAND = 'sudo apt install ddcutil';
 const REPLUG_SETTLE_MS = 2000;
 const APP_ICON = 'com.maksforge.MonitorBrightnessPresets';
@@ -31,7 +34,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             application,
             title: _('Brightness Presets'),
             default_width: 460,
-            default_height: 560,
+            default_height: 620,
             width_request: 360,
             height_request: 320,
         });
@@ -53,6 +56,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
 
         const handlers = [
             settings.connect('changed::presets', () => this._buildPresetRows()),
+            settings.connect('changed::preset-contrast', () => this._buildPresetRows()),
             settings.connect('changed::active-preset', () => this._followActivePreset()),
         ];
         const screens = this.get_display().get_monitors();
@@ -139,14 +143,14 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         applyPreset.connect('activate', (_action, position) => {
             const preset = this._presets()[position.unpack() - 1];
             if (preset && this._presetsGroup.sensitive && this._stack.visible_child_name === 'content')
-                this._applyPreset(...preset);
+                this._applyPreset(preset);
         });
         for (const action of [this._refreshAction, editPresets, shortcuts, about, applyPreset])
             this.add_action(action);
     }
 
     _presets() {
-        return this._settings.get_value('presets').deepUnpack();
+        return readPresets(this._settings);
     }
 
     _buildPresetRows() {
@@ -160,19 +164,47 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             }));
             return;
         }
-        for (const [name, percent] of presets) {
+        const withContrast = presets.some(({contrast}) => contrast !== null);
+        this._contrastSlots = new Gtk.SizeGroup({mode: Gtk.SizeGroupMode.HORIZONTAL});
+        for (const preset of presets) {
+            const {name, brightness, contrast} = preset;
             const mark = new Gtk.Stack({width_request: 16, height_request: 16, valign: Gtk.Align.CENTER});
             mark.add_named(new Gtk.Box(), 'none');
             mark.add_named(new Gtk.Image({icon_name: 'object-select-symbolic'}), 'check');
             mark.add_named(new Adw.Spinner(), 'busy');
             const row = new Adw.ActionRow({title: name, use_markup: false, activatable: true});
-            row.add_suffix(new Gtk.Label({label: `${percent}%`, css_classes: ['numeric', 'dim-label']}));
+            row.add_suffix(new Gtk.Label({
+                label: `${brightness}%`,
+                css_classes: ['numeric', 'dim-label'],
+                width_chars: 4,
+                xalign: 1,
+            }));
+            if (withContrast)
+                row.add_suffix(this._contrastSlot(contrast));
             row.add_suffix(mark);
-            row.connect('activated', () => this._applyPreset(name, percent));
+            row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [contrast === null
+                ? format(_('Brightness %d%%'), brightness)
+                : format(_('Brightness %d%%, contrast %d%%'), brightness, contrast)]);
+            row.connect('activated', () => this._applyPreset(preset));
             this._presetList.append(row);
             this._presetRows.push({name, mark});
         }
         this._syncPresetMarks();
+    }
+
+    _contrastSlot(contrast) {
+        const slot = new Gtk.Box({spacing: 4, margin_start: 6, valign: Gtk.Align.CENTER});
+        this._contrastSlots.add_widget(slot);
+        if (contrast === null)
+            return slot;
+        slot.append(new Gtk.Image({
+            gicon: contrastIcon(),
+            pixel_size: 16,
+            css_classes: ['dim-label'],
+            accessible_role: Gtk.AccessibleRole.PRESENTATION,
+        }));
+        slot.append(new Gtk.Label({label: `${contrast}%`, css_classes: ['numeric', 'dim-label'], width_chars: 4, xalign: 1}));
+        return slot;
     }
 
     _syncPresetMarks() {
@@ -210,7 +242,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
     }
 
     async _readBack(active, isCurrent, wanted) {
-        const rowRequests = new Map([...this._monitorRows].map(([bus, row]) => [bus, row.request]));
+        const rowRequests = new Map([...this._monitorRows].map(([bus, row]) => [bus, {...row.requests}]));
         let displays;
         try {
             ({displays} = await this._monitors.read());
@@ -221,33 +253,42 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
         if (!isCurrent())
             return;
-        const preset = this._presets().find(([name]) => name === active);
+        const preset = this._presets().find(({name}) => name === active);
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
-            if (!row || row.request !== rowRequests.get(display.bus) || !wanted(row))
+            const requests = rowRequests.get(display.bus);
+            if (!row || !requests || !wanted(row))
                 continue;
-            row.percent = display.percent;
-            if (preset && display.current === percentToValue(preset[1], display.max))
-                row.note = null;
+            if (row.requests.brightness === requests.brightness) {
+                row.percent = display.percent;
+                if (preset && display.current === percentToValue(preset.brightness, display.max))
+                    row.setRejected('brightness', false);
+            }
+            if (row.requests.contrast === requests.contrast && display.contrastPercent !== null) {
+                row.contrast = display.contrastPercent;
+                if (preset && preset.contrast !== null &&
+                    display.contrastCurrent === percentToValue(preset.contrast, display.contrastMax))
+                    row.setRejected('contrast', false);
+            }
         }
     }
 
-    async _applyPreset(name, percent) {
+    async _applyPreset(preset) {
+        const {name, brightness, contrast} = preset;
         const request = ++this._presetRequest;
         this._pendingPreset = name;
         this._syncPresetMarks();
+        const features = contrast === null ? ['brightness'] : ['brightness', 'contrast'];
         const rowRequests = new Map();
-        for (const [bus, row] of this._monitorRows) {
-            rowRequests.set(bus, ++row.request);
-            row.working = false;
-        }
+        for (const [bus, row] of this._monitorRows)
+            rowRequests.set(bus, Object.fromEntries(features.map(feature => [feature, row.claim(feature, false)])));
         try {
-            const {displays, failed} = await this._monitors.setBrightness(percent);
+            const {displays, rejected} = await this._monitors.apply({brightness, contrast});
             if (request !== this._presetRequest)
                 return;
-            if (failed.length < displays.length)
+            if (acceptedBrightness(displays, rejected))
                 this._writeActivePreset(name);
-            this._showWrites(displays, failed, percent, rowRequests);
+            this._showWrites(displays, rejected, preset, rowRequests);
         } catch (error) {
             if (request === this._presetRequest)
                 this._showError(error);
@@ -259,48 +300,48 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
     }
 
-    _showWrites(displays, failed, percent, rowRequests) {
+    _showWrites(displays, rejected, preset, rowRequests) {
         if (displays.some(display => !this._monitorRows.has(display.bus))) {
             this._refresh();
             return;
         }
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
-            if (row.request !== rowRequests.get(display.bus))
-                continue;
-            if (failed.includes(display)) {
-                row.note = REJECTED;
-            } else {
-                row.note = null;
-                row.percent = percent;
+            for (const [feature, request] of Object.entries(rowRequests.get(display.bus) ?? {})) {
+                if (!row.isLatest(feature, request) || (feature === 'contrast' && display.contrastMax === null))
+                    continue;
+                const wasRejected = rejected[display.bus]?.includes(feature) ?? false;
+                row.setRejected(feature, wasRejected);
+                if (!wasRejected)
+                    row[feature === 'contrast' ? 'contrast' : 'percent'] = preset[feature];
             }
         }
-        if (failed.length > 0)
+        if (Object.keys(rejected).length > 0)
             this._rereadRejected();
     }
 
-    async _setMonitor(row, percent) {
-        const request = ++row.request;
-        row.working = true;
+    async _setMonitor(row, feature, percent) {
+        const request = row.claim(feature, true);
         try {
-            const {displays, failed} = await this._monitors.setMonitorBrightness(row.bus, percent);
-            if (request !== row.request)
+            const {displays, rejected} = feature === 'contrast'
+                ? await this._monitors.setMonitorContrast(row.bus, percent)
+                : await this._monitors.setMonitorBrightness(row.bus, percent);
+            if (!row.isLatest(feature, request))
                 return;
             if (!displays.some(display => display.bus === row.bus)) {
                 this._refresh();
-            } else if (failed.length > 0) {
-                row.note = REJECTED;
+            } else if (rejected[row.bus]?.includes(feature)) {
+                row.setRejected(feature, true);
                 this._rereadRejected();
             } else {
-                row.note = null;
+                row.setRejected(feature, false);
                 this._writeActivePreset('');
             }
         } catch (error) {
-            if (request === row.request)
+            if (row.isLatest(feature, request))
                 this._showError(error);
         } finally {
-            if (request === row.request)
-                row.working = false;
+            row.release(feature, request);
         }
     }
 
@@ -315,8 +356,10 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
-            if (row?.note)
+            if (row?.rejected.brightness)
                 row.percent = display.percent;
+            if (row?.rejected.contrast && display.contrastPercent !== null)
+                row.contrast = display.contrastPercent;
         }
     }
 
@@ -366,11 +409,15 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._monitorList.remove_all();
         const rows = new Map();
         for (const display of displays) {
-            const row = this._monitorRows.get(display.bus) ??
-                new MonitorRow(display.bus, percent => this._setMonitor(row, percent));
+            const row = this._monitorRows.get(display.bus) ?? new MonitorRow(display.bus,
+                percent => this._setMonitor(row, 'brightness', percent),
+                percent => this._setMonitor(row, 'contrast', percent));
             row.name = display.name;
             row.percent = display.percent;
-            row.note = null;
+            row.hasContrast = display.contrastMax !== null;
+            if (display.contrastPercent !== null)
+                row.contrast = display.contrastPercent;
+            row.clearRejected();
             row.refreshing = false;
             rows.set(display.bus, row);
             this._monitorList.append(row);

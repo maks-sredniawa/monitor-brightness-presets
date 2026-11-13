@@ -2,9 +2,9 @@
 
 Tool. A GNOME Shell extension that keeps a few brightness presets for all your monitors, whatever their make, so you can switch every screen between them in a moment.
 
-It adds a **Brightness** toggle to Quick Settings. Its menu lists the presets (Day 100%, Evening 60%, Night 25% to start with). Picking one sets every external monitor to that brightness over DDC/CI, scaled to each monitor's own range. **Edit presets** opens the preferences, where presets can be renamed, changed, added and removed.
+It adds a **Brightness** toggle to Quick Settings. Its menu lists the presets (Day 100%, Evening 60%, Night 25% to start with). Picking one sets every external monitor to that brightness over DDC/CI, scaled to each monitor's own range. A preset can also set a contrast, shown after its brightness; one without a contrast leaves each monitor's contrast as it is. **Edit presets** opens the preferences, where presets can be renamed, changed, added and removed, and given a contrast or none.
 
-The **Brightness Presets** app, in the app grid, does the same in its own window and adds a slider for each monitor, showing its current brightness. It shares the presets with the Quick Settings toggle, so a pick in either shows in both. Monitors it cannot control are listed with the reason. Ctrl+1 to Ctrl+9 apply the presets, Ctrl+R refreshes the monitors after replugging.
+The **Brightness Presets** app, in the app grid, does the same in its own window and adds two sliders for each monitor, showing its current brightness and contrast; a monitor whose contrast cannot be set over DDC/CI gets only the brightness slider. It shares the presets with the Quick Settings toggle, so a pick in either shows in both. Monitors it cannot control are listed with the reason. Ctrl+1 to Ctrl+9 apply the presets, Ctrl+R refreshes the monitors after replugging.
 
 ## Status
 

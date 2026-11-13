@@ -5,7 +5,12 @@
     <key name="presets" type="a(si)">
       <default>[('Day', 100), ('Evening', 60), ('Night', 25)]</default>
       <summary>Brightness presets</summary>
-      <description>Each preset is a name and a brightness in percent, applied to every monitor.</description>
+      <description>Each preset is a name and a brightness in percent, applied to every monitor. A preset's contrast, if it has one, is in preset-contrast.</description>
+    </key>
+    <key name="preset-contrast" type="a{si}">
+      <default>{}</default>
+      <summary>Contrast of each preset</summary>
+      <description>Maps a preset's name to the contrast in percent it sets on every monitor. A preset not listed leaves contrast as it is.</description>
     </key>
     <key name="active-preset" type="s">
       <default>''</default>
