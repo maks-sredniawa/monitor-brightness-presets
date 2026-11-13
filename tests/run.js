@@ -448,6 +448,17 @@ test('a preset with contrast replaces a waiting contrast drag', async () => {
     assertEqual(writes(calls).includes('--bus 4 setvcp 12 20'), false);
 });
 
+test('a preset without contrast does not swallow a waiting contrast drag', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await Promise.all([
+        monitors.setBrightness(100),
+        monitors.setMonitorContrast(4, 20),
+        monitors.apply({brightness: 60, contrast: null}),
+    ]);
+    assertEqual(writes(calls).includes('--bus 4 setvcp 12 20'), true);
+});
+
 function memorySettings() {
     const schemaDir = GLib.build_filenamev([testsDir, '..', 'extension', 'schemas']);
     const source = Gio.SettingsSchemaSource.new_from_directory(schemaDir, null, false);

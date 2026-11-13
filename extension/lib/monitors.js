@@ -50,7 +50,7 @@ function covers(job, waiting) {
     if (job.kind === 'read')
         return true;
     return (job.bus === null || job.bus === waiting.bus) &&
-        Object.keys(waiting.values).every(feature => feature in job.values);
+        Object.keys(waiting.values).every(feature => (job.values[feature] ?? null) !== null);
 }
 
 export class Monitors {
