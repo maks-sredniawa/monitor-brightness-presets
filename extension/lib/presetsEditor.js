@@ -25,6 +25,7 @@ function buildContrastButton(contrast, sizeGroup, onChange, _) {
     spin.set_increments(5, 10);
     spin.value = contrast ?? DEFAULT_CONTRAST;
     spin.hexpand = true;
+    spin.update_property([Gtk.AccessibleProperty.LABEL], [_('Contrast percent')]);
     const spinRow = new Gtk.Box({spacing: 6});
     spinRow.append(spin);
     spinRow.append(new Gtk.Label({label: '%'}));
@@ -133,6 +134,7 @@ export function buildPresetsEditor(settings, _) {
         const spin = Gtk.SpinButton.new_with_range(0, 100, 5);
         spin.value = percent;
         spin.valign = Gtk.Align.CENTER;
+        spin.update_property([Gtk.AccessibleProperty.LABEL], [_('Brightness percent')]);
         const contrastControl = buildContrastButton(contrast, contrastButtons, () => save(), _);
         const remove = new Gtk.Button({
             icon_name: 'user-trash-symbolic',
