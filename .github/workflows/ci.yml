@@ -26,3 +26,13 @@ jobs:
       - uses: actions/checkout@v7
       - run: apt-get update && apt-get install -y --no-install-recommends gjs gir1.2-adw-1 gir1.2-gtk-4.0 libglib2.0-bin xvfb xauth make
       - run: make smoke
+
+  shell:
+    name: GNOME Shell schedule check
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: apt-get update && apt-get install -y --no-install-recommends gnome-shell dbus-daemon dbus-bin dconf-service libglib2.0-bin make
+      - run: make shell-check

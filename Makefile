@@ -5,13 +5,16 @@ DATA_DIR := $(HOME)/.local/share
 DESKTOP_FILE := $(DATA_DIR)/applications/$(APP_ID).desktop
 ICON_DIR := $(DATA_DIR)/icons/hicolor
 
-.PHONY: test smoke schemas install install-app uninstall-app enable pack
+.PHONY: test smoke shell-check schemas install install-app uninstall-app enable pack
 
 test: schemas
 	gjs -m tests/run.js
 
 smoke: schemas
 	env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GSETTINGS_BACKEND=memory xvfb-run -a gjs -m tests/app-smoke.js
+
+shell-check: schemas
+	tests/shell-check.sh
 
 schemas:
 	glib-compile-schemas --strict extension/schemas

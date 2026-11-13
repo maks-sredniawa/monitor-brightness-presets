@@ -25,6 +25,7 @@ The app needs GTK 4 and libadwaita 1.8 or newer (`gir1.2-adw-1`), as on Ubuntu 2
 ```bash
 make test         # unit and subprocess tests, against a fake ddcutil
 make smoke        # drives the app window under xvfb, against the fake ddcutil
+make shell-check  # runs the extension in a headless GNOME Shell and checks the schedule timer (about 3 minutes)
 make install      # compiles the settings schema and links extension/ into ~/.local/share/gnome-shell/extensions
 make install-app  # adds the app to the app grid, run from this clone
 make uninstall-app
