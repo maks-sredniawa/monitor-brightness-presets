@@ -10,6 +10,11 @@ export function collectPresets(rows, activeRow) {
             owners.set(row.name, row);
     }
     const saved = [...owners.values()];
+    const renames = {};
+    for (const row of saved) {
+        if (row.savedName && row.savedName !== row.name && !owners.has(row.savedName))
+            renames[row.savedName] = row.name;
+    }
     return {
         presets: saved.map(row => [row.name, row.percent]),
         contrasts: Object.fromEntries(saved
@@ -17,6 +22,7 @@ export function collectPresets(rows, activeRow) {
             .map(row => [row.name, row.contrast])),
         saved,
         duplicates,
+        renames,
         active: activeRow && owners.get(activeRow.name) === activeRow ? activeRow.name : '',
     };
 }

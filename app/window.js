@@ -11,6 +11,9 @@ import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from '../ex
 import {readPresets} from '../extension/lib/presets.js';
 import {buildPresetsEditor} from '../extension/lib/presetsEditor.js';
 import {acceptedBrightness} from '../extension/lib/problems.js';
+import {markHandPick} from '../extension/lib/schedule.js';
+import {buildScheduleEditor, watchStatus} from '../extension/lib/scheduleEditor.js';
+import {watchExtension} from './extensionState.js';
 import {MonitorRow} from './monitorRow.js';
 
 const _ = text => text;
@@ -29,12 +32,12 @@ const REPO_URL = 'https://github.com/maks-sredniawa/monitor-brightness-presets';
 
 export const BrightnessWindow = GObject.registerClass(
 class BrightnessWindow extends Adw.ApplicationWindow {
-    constructor(application, settings) {
+    constructor(application, settings, {watchExtensionState = watchExtension} = {}) {
         super({
             application,
             title: _('Brightness Presets'),
             default_width: 460,
-            default_height: 620,
+            default_height: 740,
             width_request: 360,
             height_request: 320,
         });
@@ -49,10 +52,20 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._recheckRequest = 0;
         this._replugTimer = 0;
         this._written = settings.get_string('active-preset');
+        this._extensionActive = null;
+        this._scheduleEditors = new Set();
 
         this._toasts = new Adw.ToastOverlay({child: this._buildToolbar()});
         this.content = this._toasts;
         this._addActions();
+        this._scheduleStatus = watchStatus(settings, _, {
+            extensionActive: () => this._extensionActive,
+            onText: text => (this._scheduleRow.subtitle = text),
+        });
+        this._extensionWatch = watchExtensionState(active => {
+            this._extensionActive = active;
+            this._syncScheduleStatus();
+        });
 
         const handlers = [
             settings.connect('changed::presets', () => this._buildPresetRows()),
@@ -62,11 +75,16 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         const screens = this.get_display().get_monitors();
         const replug = screens.connect('items-changed', () => this._refreshAfterReplug());
         this.connect('notify::is-active', () => {
-            if (this.is_active)
-                this._recheckNotedRows();
+            if (!this.is_active)
+                return;
+            this._recheckNotedRows();
+            this._extensionWatch.recheck();
+            this._syncScheduleStatus();
         });
         this.connect('close-request', () => {
             handlers.forEach(id => settings.disconnect(id));
+            this._scheduleStatus.destroy();
+            this._extensionWatch.destroy();
             screens.disconnect(replug);
             if (this._replugTimer)
                 GLib.source_remove(this._replugTimer);
@@ -120,12 +138,25 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._presetList = new Gtk.ListBox({selection_mode: Gtk.SelectionMode.NONE, css_classes: ['boxed-list']});
         this._presetsGroup.add(this._presetList);
 
+        const scheduleGroup = new Adw.PreferencesGroup({title: _('Schedule')});
+        scheduleGroup.set_header_suffix(new Gtk.Button({
+            icon_name: 'document-edit-symbolic',
+            tooltip_text: _('Edit Schedule'),
+            action_name: 'win.edit-schedule',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        }));
+        this._scheduleRow = new Adw.SwitchRow({title: _('Follow Schedule'), use_markup: false});
+        this._settings.bind('schedule-enabled', this._scheduleRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        scheduleGroup.add(this._scheduleRow);
+
         const monitorsGroup = new Adw.PreferencesGroup({title: _('Monitors')});
         this._monitorList = new Gtk.ListBox({selection_mode: Gtk.SelectionMode.NONE, css_classes: ['boxed-list']});
         monitorsGroup.add(this._monitorList);
 
         const page = new Adw.PreferencesPage();
         page.add(this._presetsGroup);
+        page.add(scheduleGroup);
         page.add(monitorsGroup);
         return page;
     }
@@ -135,6 +166,8 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._refreshAction.connect('activate', () => this._refresh());
         const editPresets = new Gio.SimpleAction({name: 'edit-presets'});
         editPresets.connect('activate', () => this._editPresets());
+        const editSchedule = new Gio.SimpleAction({name: 'edit-schedule'});
+        editSchedule.connect('activate', () => this._editSchedule());
         const shortcuts = new Gio.SimpleAction({name: 'shortcuts'});
         shortcuts.connect('activate', () => this._showShortcuts());
         const about = new Gio.SimpleAction({name: 'about'});
@@ -145,7 +178,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             if (preset && this._presetsGroup.sensitive && this._stack.visible_child_name === 'content')
                 this._applyPreset(preset);
         });
-        for (const action of [this._refreshAction, editPresets, shortcuts, about, applyPreset])
+        for (const action of [this._refreshAction, editPresets, editSchedule, shortcuts, about, applyPreset])
             this.add_action(action);
     }
 
@@ -273,9 +306,16 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
     }
 
+    _syncScheduleStatus() {
+        this._scheduleStatus.sync();
+        for (const editor of this._scheduleEditors)
+            editor.syncStatus();
+    }
+
     async _applyPreset(preset) {
         const {name, brightness, contrast} = preset;
         const request = ++this._presetRequest;
+        markHandPick(this._settings, GLib.DateTime.new_now_local());
         this._pendingPreset = name;
         this._syncPresetMarks();
         const features = contrast === null ? ['brightness'] : ['brightness', 'contrast'];
@@ -486,12 +526,28 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         dialog.present(this);
     }
 
+    _editSchedule() {
+        const editor = buildScheduleEditor(this._settings, _, {extensionActive: () => this._extensionActive});
+        this._scheduleEditors.add(editor);
+        const page = new Adw.PreferencesPage();
+        page.add(editor.group);
+        const view = new Adw.ToolbarView({content: page});
+        view.add_top_bar(new Adw.HeaderBar());
+        const dialog = new Adw.Dialog({title: _('Schedule'), content_width: 440, content_height: 480, child: view});
+        dialog.connect('closed', () => {
+            this._scheduleEditors.delete(editor);
+            editor.destroy();
+        });
+        dialog.present(this);
+    }
+
     _showShortcuts() {
         const section = new Adw.ShortcutsSection();
         for (const [title, accelerator] of [
             [_('Apply preset 1 to 9'), '<Control>1...<Control>9'],
             [_('Refresh monitors'), '<Control>r F5'],
             [_('Edit presets'), '<Control>comma'],
+            [_('Edit schedule'), '<Control>t'],
             [_('Keyboard shortcuts'), '<Control>question'],
             [_('Quit'), '<Control>q'],
         ])

@@ -6,6 +6,7 @@ import Gtk from 'gi://Gtk';
 import {format} from './format.js';
 import {contrastIcon} from './icons.js';
 import {collectPresets, readPresets} from './presets.js';
+import {renameInSchedule} from './schedule.js';
 
 const DEFAULT_CONTRAST = 50;
 
@@ -91,14 +92,17 @@ export function buildPresetsEditor(settings, _) {
         description: _('Each preset sets every monitor to the same brightness. Presets without a name, or with the name of a preset above them, are not saved.'),
     });
 
-    // Presets and their contrasts must land in one write, and delaying the caller's own
+    // Presets, their contrasts and renamed schedule times must land in one write, and delaying the caller's own
     // settings object would also hold back its writes of the active preset.
     const writer = new Gio.Settings({settings_schema: settings.settings_schema, backend: settings.backend});
     writer.delay();
 
     const contrastButtons = new Gtk.SizeGroup({mode: Gtk.SizeGroupMode.HORIZONTAL});
+    const duplicateNote = _('Another preset above has the same name, so this one is not saved.');
     const rows = [];
     let activeRow;
+    const nameRemove = row => row.remove.update_property([Gtk.AccessibleProperty.LABEL],
+        [row.name ? format(_('Remove %s'), row.name) : _('Remove preset')]);
     let written = settings.get_string('active-preset');
     const save = () => {
         for (const row of rows) {
@@ -106,16 +110,30 @@ export function buildPresetsEditor(settings, _) {
             row.percent = row.spin.get_value_as_int();
             row.contrast = row.contrastControl.current();
         }
-        const {presets, contrasts, duplicates, active} = collectPresets(rows, activeRow);
+        const {presets, contrasts, duplicates, renames, saved, active} = collectPresets(rows, activeRow);
         for (const row of rows) {
-            if (duplicates.has(row))
+            if (duplicates.has(row)) {
                 row.entry.add_css_class('error');
-            else
+                row.entry.title = _('Same name as above, not saved');
+                row.entry.update_state([Gtk.AccessibleState.INVALID], [Gtk.AccessibleInvalidState.TRUE]);
+                row.entry.update_property([Gtk.AccessibleProperty.DESCRIPTION], [duplicateNote]);
+            } else {
                 row.entry.remove_css_class('error');
+                row.entry.title = _('Name');
+                row.entry.reset_state(Gtk.AccessibleState.INVALID);
+                row.entry.reset_property(Gtk.AccessibleProperty.DESCRIPTION);
+            }
+            nameRemove(row);
         }
         writer.set_value('presets', new GLib.Variant('a(si)', presets));
         writer.set_value('preset-contrast', new GLib.Variant('a{si}', contrasts));
+        if (Object.keys(renames).length > 0) {
+            const schedule = renameInSchedule(writer.get_value('schedule').deepUnpack(), renames);
+            writer.set_value('schedule', new GLib.Variant('a(is)', schedule));
+        }
         writer.apply();
+        for (const row of saved)
+            row.savedName = row.name;
         if (active !== settings.get_string('active-preset')) {
             written = active;
             settings.set_string('active-preset', active);
@@ -147,17 +165,21 @@ export function buildPresetsEditor(settings, _) {
         entry.add_suffix(contrastControl.button);
         entry.add_suffix(remove);
 
-        const row = {entry, spin, contrastControl, name, percent, contrast};
+        const row = {entry, spin, remove, contrastControl, name, savedName: name, percent, contrast};
+        nameRemove(row);
         rows.push(row);
         group.add(entry);
 
         entry.connect('changed', save);
         spin.connect('value-changed', save);
         remove.connect('clicked', () => {
-            rows.splice(rows.indexOf(row), 1);
+            const index = rows.indexOf(row);
+            rows.splice(index, 1);
+            const neighbour = rows[index] ?? rows[index - 1];
             contrastButtons.remove_widget(contrastControl.button);
             group.remove(entry);
             save();
+            (neighbour?.entry ?? add).grab_focus();
         });
         return entry;
     };

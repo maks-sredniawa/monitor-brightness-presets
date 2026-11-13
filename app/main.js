@@ -20,6 +20,7 @@ class BrightnessApp extends Adw.Application {
         this.set_accels_for_action('app.quit', ['<Control>q']);
         this.set_accels_for_action('win.refresh', ['<Control>r', 'F5']);
         this.set_accels_for_action('win.edit-presets', ['<Control>comma']);
+        this.set_accels_for_action('win.edit-schedule', ['<Control>t']);
         this.set_accels_for_action('win.shortcuts', ['<Control>question']);
         for (let position = 1; position <= 9; position++)
             this.set_accels_for_action(`win.apply-preset(${position})`, [`<Control>${position}`]);
