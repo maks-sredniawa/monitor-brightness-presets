@@ -94,6 +94,39 @@ Busy display
     ]);
 });
 
+test('parseDisplays tells monitors of the same model apart by connector, or by bus without one', () => {
+    const output = `Display 1
+   I2C bus:  /dev/i2c-8
+   DRM_connector:           card1-HDMI-A-1
+   Monitor:                 IVM:PL2745Q:A1
+
+Display 2
+   I2C bus:  /dev/i2c-9
+   DRM_connector:           card1-DP-1
+   Monitor:                 IVM:PL2745Q:A2
+
+Display 3
+   I2C bus:  /dev/i2c-4
+   Monitor:                 GSM:LG ULTRAGEAR:
+
+Display 4
+   I2C bus:  /dev/i2c-5
+   Monitor:                 GSM:LG ULTRAGEAR:
+
+Display 5
+   I2C bus:  /dev/i2c-6
+   DRM_connector:           card1-DP-2
+   Monitor:                 DEL:U2720Q:
+`;
+    assertEqual(parseDisplays(output).map(display => display.name), [
+        'PL2745Q (HDMI-A-1)',
+        'PL2745Q (DP-1)',
+        'LG ULTRAGEAR (I2C bus 4)',
+        'LG ULTRAGEAR (I2C bus 5)',
+        'U2720Q',
+    ]);
+});
+
 test('parseBrightness reads current and max, or null on error', () => {
     assertEqual(parseBrightness('VCP 10 C 37 100\n'), {current: 37, max: 100});
     assertEqual(parseBrightness('VCP 10 ERR\n'), null);

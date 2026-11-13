@@ -1,5 +1,6 @@
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -10,6 +11,7 @@ import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/ext
 import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from './lib/monitors.js';
 
 const ICON = 'display-brightness-symbolic';
+const APP_ID = 'com.maksforge.MonitorBrightnessPresets.desktop';
 
 function listNames(displays) {
     return new Intl.ListFormat(undefined, {type: 'conjunction'}).format(displays.map(display => display.name));
@@ -53,13 +55,21 @@ class PresetsToggle extends QuickMenuToggle {
         this._presetSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._presetSection);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._openApp = this.menu.addAction(_('Open Brightness Presets'),
+            () => Shell.AppSystem.get_default().lookup_app(APP_ID)?.activate());
         this.menu.addAction(_('Edit presets'), () => extension.openPreferences());
 
         this.connect('clicked', () => this.menu.open());
         this.connect('destroy', () => this._monitors.destroy());
         this._settings.connectObject('changed', () => this._sync(), this);
         Main.layoutManager.connectObject('monitors-changed', () => this._monitors.forget(), this);
+        Shell.AppSystem.get_default().connectObject('installed-changed', () => this._syncOpenApp(), this);
         this._sync();
+        this._syncOpenApp();
+    }
+
+    _syncOpenApp() {
+        this._openApp.visible = Shell.AppSystem.get_default().lookup_app(APP_ID) !== null;
     }
 
     _sync() {

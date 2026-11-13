@@ -30,10 +30,16 @@ export function parseDisplays(detectOutput) {
                 current.name = monitor[2].trim() || monitor[1].trim() || current.name;
         }
     }
-    return displays
+    const kept = displays
         .filter(display => display.bus !== null)
         .filter(display => display.status === 'ok' || !BUILT_IN_PANEL.test(display.connector))
-        .map(({bus, name, status}) => ({bus, name: name || `I2C bus ${bus}`, status}));
+        .map(display => ({...display, name: display.name || `I2C bus ${display.bus}`}));
+    const shared = kept.filter(display => kept.filter(other => other.name === display.name).length > 1);
+    return kept.map(({bus, name, status, connector}) => ({
+        bus,
+        name: shared.some(display => display.bus === bus) ? `${name} (${connector || `I2C bus ${bus}`})` : name,
+        status,
+    }));
 }
 
 export function parseBrightness(getvcpOutput) {
