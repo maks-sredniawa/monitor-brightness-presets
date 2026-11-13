@@ -7,7 +7,7 @@ ICON_DIR := $(DATA_DIR)/icons/hicolor
 
 .PHONY: test smoke schemas install install-app uninstall-app enable pack
 
-test:
+test: schemas
 	gjs -m tests/run.js
 
 smoke: schemas
