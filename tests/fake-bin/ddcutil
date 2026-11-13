@@ -54,6 +54,17 @@ OUT
       *) echo "unexpected: $*" >&2; exit 2 ;;
     esac
     ;;
+  "--bus "*" getvcp 12 --brief")
+    if [[ " $FAKE_DDCUTIL_NO_CONTRAST $FAKE_DDCUTIL_GETVCP_FAIL " == *" $2 "* ]]; then
+      echo "Unsupported feature code (Null response): 12" >&2; exit 1
+    fi
+    case "$2" in
+      4) echo "VCP 12 C 50 100" ;;
+      6) echo "VCP 12 C 30 60" ;;
+      *) echo "unexpected: $*" >&2; exit 2 ;;
+    esac
+    ;;
+  "--bus $FAKE_DDCUTIL_FAIL_CONTRAST_BUS setvcp 12"*) echo "DDC communication failed" >&2; exit 1 ;;
   "--bus $FAKE_DDCUTIL_FAIL_BUS setvcp"*) echo "DDC communication failed" >&2; exit 1 ;;
   *"setvcp"*) ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;

@@ -1,9 +1,10 @@
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import System from 'system';
 
-import {parseBrightness, parseDisplays, percentToValue, valueToPercent} from '../extension/lib/ddc.js';
+import {parseBrightness, parseDisplays, parseVcp, percentToValue, valueToPercent} from '../extension/lib/ddc.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError} from '../extension/lib/monitors.js';
-import {collectPresets} from '../extension/lib/presets.js';
+import {collectPresets, readPresets} from '../extension/lib/presets.js';
 
 const testsDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const fakeBin = GLib.build_filenamev([testsDir, 'fake-bin']);
@@ -18,7 +19,7 @@ function assertEqual(actual, expected) {
         throw new Error(`expected ${e}\n       got ${a}`);
 }
 
-function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, busyDisplay = false, laptopPanel = false, answeringDisplays = true} = {}) {
+function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, busyDisplay = false, laptopPanel = false, answeringDisplays = true, noContrast = '', failContrastBus = ''} = {}) {
     const [fd, log] = GLib.file_open_tmp('ddcutil-XXXXXX.log');
     GLib.close(fd);
     GLib.setenv('PATH', `${fakeBin}:${systemPath}`, true);
@@ -29,6 +30,8 @@ function useFakeDdcutil({failBus = '', getvcpFail = '', invalidDisplay = false, 
     GLib.setenv('FAKE_DDCUTIL_BUSY_DISPLAY', busyDisplay ? '1' : '', true);
     GLib.setenv('FAKE_DDCUTIL_LAPTOP_PANEL', laptopPanel ? '1' : '', true);
     GLib.setenv('FAKE_DDCUTIL_NO_ANSWERING_DISPLAYS', answeringDisplays ? '' : '1', true);
+    GLib.setenv('FAKE_DDCUTIL_NO_CONTRAST', noContrast, true);
+    GLib.setenv('FAKE_DDCUTIL_FAIL_CONTRAST_BUS', failContrastBus, true);
     return () => new TextDecoder().decode(GLib.file_get_contents(log)[1]).trim().split('\n');
 }
 
@@ -167,6 +170,7 @@ test('a monitor that fails is reported and the others still change', async () =>
     const calls = useFakeDdcutil({failBus: '6'});
     const result = await new Monitors().setBrightness(50);
     assertEqual(result.failed.map(display => display.name), ['PL2745Q']);
+    assertEqual(result.rejected, {6: ['brightness']});
     assertEqual(calls().includes('--bus 4 setvcp 10 50'), true);
 });
 
@@ -359,7 +363,7 @@ test('reads wait for writes so ddcutil never talks to a monitor twice at once', 
     await monitors.read();
     const before = calls().length;
     await Promise.all([monitors.setBrightness(60), monitors.read()]);
-    assertEqual(calls().slice(before).map(call => call.split(' ')[2]), ['setvcp', 'setvcp', 'getvcp', 'getvcp']);
+    assertEqual(calls().slice(before).map(call => call.split(' ')[2]), ['setvcp', 'setvcp', 'getvcp', 'getvcp', 'getvcp', 'getvcp']);
 });
 
 test('a failed job does not stop the ones queued behind it', async () => {
@@ -371,6 +375,104 @@ test('a failed job does not stop the ones queued behind it', async () => {
     const next = monitors.setMonitorBrightness(4, 30);
     assertEqual((await failing) instanceof DdcutilMissingError, true);
     assertEqual((await next).failed, []);
+});
+
+test('parseVcp reads any feature by its code', () => {
+    assertEqual(parseVcp('VCP 12 C 80 100\n', '12'), {current: 80, max: 100});
+    assertEqual(parseVcp('VCP 10 C 80 100\n', '12'), null);
+});
+
+test('read gives each monitor its contrast too, scaled to its own maximum', async () => {
+    useFakeDdcutil();
+    const result = await new Monitors().read();
+    assertEqual(result.displays.map(({bus, contrastPercent}) => [bus, contrastPercent]), [[4, 50], [6, 50]]);
+});
+
+test('a monitor without contrast reads as such and is still controllable', async () => {
+    useFakeDdcutil({noContrast: '6'});
+    const result = await new Monitors().read();
+    assertEqual(result.displays.map(({bus, contrastPercent}) => [bus, contrastPercent]), [[4, 50], [6, null]]);
+    assertEqual(result.unreachable, []);
+});
+
+test('a preset with contrast sets brightness then contrast on every monitor, scaled', async () => {
+    const calls = useFakeDdcutil();
+    const result = await new Monitors().apply({brightness: 60, contrast: 40});
+    assertEqual(result.failed, []);
+    assertEqual(writes(calls).sort(), [
+        '--bus 4 setvcp 10 60', '--bus 4 setvcp 12 40', '--bus 6 setvcp 10 30', '--bus 6 setvcp 12 24',
+    ]);
+});
+
+test('a preset with contrast skips contrast on a monitor without it', async () => {
+    const calls = useFakeDdcutil({noContrast: '6'});
+    const result = await new Monitors().apply({brightness: 60, contrast: 40});
+    assertEqual(result.failed, []);
+    assertEqual(writes(calls).filter(call => call.startsWith('--bus 6')), ['--bus 6 setvcp 10 30']);
+});
+
+test('a monitor that rejects a contrast write is reported', async () => {
+    useFakeDdcutil({failContrastBus: '6'});
+    const result = await new Monitors().apply({brightness: 60, contrast: 40});
+    assertEqual(result.failed.map(display => display.bus), [6]);
+    assertEqual(result.rejected, {6: ['contrast']});
+});
+
+test('setMonitorContrast sets only that monitor contrast', async () => {
+    const calls = useFakeDdcutil();
+    await new Monitors().setMonitorContrast(6, 50);
+    assertEqual(writes(calls), ['--bus 6 setvcp 12 30']);
+});
+
+test('a brightness-only preset does not swallow a waiting contrast write', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await Promise.all([
+        monitors.setBrightness(100),
+        monitors.setMonitorContrast(4, 20),
+        monitors.setBrightness(60),
+    ]);
+    assertEqual(writes(calls).includes('--bus 4 setvcp 12 20'), true);
+});
+
+test('a preset with contrast replaces a waiting contrast drag', async () => {
+    const calls = useFakeDdcutil();
+    const monitors = new Monitors();
+    await Promise.all([
+        monitors.setBrightness(100),
+        monitors.setMonitorContrast(4, 20),
+        monitors.apply({brightness: 60, contrast: 70}),
+    ]);
+    assertEqual(writes(calls).includes('--bus 4 setvcp 12 20'), false);
+});
+
+function memorySettings() {
+    const schemaDir = GLib.build_filenamev([testsDir, '..', 'extension', 'schemas']);
+    const source = Gio.SettingsSchemaSource.new_from_directory(schemaDir, null, false);
+    return new Gio.Settings({
+        settings_schema: source.lookup('org.gnome.shell.extensions.monitor-brightness-presets', false),
+        backend: Gio.memory_settings_backend_new(),
+    });
+}
+
+test('presets saved before contrast existed read back without contrast', () => {
+    const settings = memorySettings();
+    settings.set_value('presets', new GLib.Variant('a(si)', [['Day', 100], ['Night', 25]]));
+    assertEqual(readPresets(settings), [
+        {name: 'Day', brightness: 100, contrast: null},
+        {name: 'Night', brightness: 25, contrast: null},
+    ]);
+});
+
+test('a preset contrast is read back by name', () => {
+    const settings = memorySettings();
+    settings.set_value('preset-contrast', new GLib.Variant('a{si}', {Day: 70}));
+    assertEqual(readPresets(settings).map(preset => preset.contrast), [70, null, null]);
+});
+
+test('collectPresets saves contrast only for named rows that have one', () => {
+    const rows = [{name: 'Day', percent: 100, contrast: 70}, {name: 'Night', percent: 25, contrast: null}, {name: '', percent: 5, contrast: 10}];
+    assertEqual(collectPresets(rows).contrasts, {Day: 70});
 });
 
 const row = (name, percent) => ({name, percent});

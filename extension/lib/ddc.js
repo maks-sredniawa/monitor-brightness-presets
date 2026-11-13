@@ -42,9 +42,16 @@ export function parseDisplays(detectOutput) {
     }));
 }
 
-export function parseBrightness(getvcpOutput) {
-    const match = getvcpOutput.match(/^VCP 10 C (\d+) (\d+)/m);
+export const BRIGHTNESS = '10';
+export const CONTRAST = '12';
+
+export function parseVcp(getvcpOutput, code) {
+    const match = getvcpOutput.match(new RegExp(`^VCP ${code} C (\\d+) (\\d+)`, 'm'));
     return match ? {current: Number(match[1]), max: Number(match[2])} : null;
+}
+
+export function parseBrightness(getvcpOutput) {
+    return parseVcp(getvcpOutput, BRIGHTNESS);
 }
 
 export function percentToValue(percent, max) {
