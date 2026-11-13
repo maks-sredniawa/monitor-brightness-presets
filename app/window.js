@@ -43,6 +43,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._pendingPreset = null;
         this._refreshRequest = 0;
         this._followRequest = 0;
+        this._recheckRequest = 0;
         this._replugTimer = 0;
         this._written = settings.get_string('active-preset');
 
@@ -56,6 +57,10 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         ];
         const screens = this.get_display().get_monitors();
         const replug = screens.connect('items-changed', () => this._refreshAfterReplug());
+        this.connect('notify::is-active', () => {
+            if (this.is_active)
+                this._recheckNotedRows();
+        });
         this.connect('close-request', () => {
             handlers.forEach(id => settings.disconnect(id));
             screens.disconnect(replug);
@@ -186,28 +191,40 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             this._settings.set_string('active-preset', name);
     }
 
-    async _followActivePreset() {
+    _followActivePreset() {
         this._syncPresetMarks();
         const active = this._settings.get_string('active-preset');
         if (active === this._written)
             return;
         this._written = active;
         const request = ++this._followRequest;
+        this._readBack(active, () => request === this._followRequest, () => true);
+    }
+
+    _recheckNotedRows() {
+        if (![...this._monitorRows.values()].some(row => row.note))
+            return;
+        const request = ++this._recheckRequest;
+        this._readBack(this._settings.get_string('active-preset'),
+            () => request === this._recheckRequest, row => row.note !== null);
+    }
+
+    async _readBack(active, isCurrent, wanted) {
         const rowRequests = new Map([...this._monitorRows].map(([bus, row]) => [bus, row.request]));
         let displays;
         try {
             ({displays} = await this._monitors.read());
         } catch (error) {
-            if (request === this._followRequest)
+            if (isCurrent())
                 this._showError(error);
             return;
         }
-        if (request !== this._followRequest)
+        if (!isCurrent())
             return;
         const preset = this._presets().find(([name]) => name === active);
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
-            if (!row || row.request !== rowRequests.get(display.bus))
+            if (!row || row.request !== rowRequests.get(display.bus) || !wanted(row))
                 continue;
             row.percent = display.percent;
             if (preset && display.current === percentToValue(preset[1], display.max))

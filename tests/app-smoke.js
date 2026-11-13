@@ -123,6 +123,18 @@ step('a pick made elsewhere that the monitor shows clears its note', async (win,
     assertEqual(win._monitorRows.get(6).percent, 40, 'slider');
 });
 
+step('re-picking the active preset elsewhere clears the note of a monitor at it once the window is active again', async (win, settings) => {
+    const [lg, pl] = [win._monitorRows.get(4), win._monitorRows.get(6)];
+    lg.note = pl.note = 'Did not change its brightness.';
+    lg.percent = pl.percent = 10;
+    settings.set_string('active-preset', 'Forty');
+    assertEqual(win.is_active, true, 'window active');
+    win.notify('is-active');
+    await until(() => pl.note === null, 'note cleared');
+    await until(() => lg.percent === 70, 'other slider read back');
+    assertEqual([pl.percent, lg.note !== null], [40, true], 'monitor at the preset cleared, other kept');
+});
+
 step('editing presets in the app rebuilds the preset rows', async (win, settings) => {
     win.activate_action('edit-presets', null);
     await until(() => win.get_visible_dialog() !== null, 'edit dialog');
