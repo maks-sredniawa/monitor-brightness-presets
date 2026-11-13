@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk?version=4.0';
 
+import {percentToValue} from '../extension/lib/ddc.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from '../extension/lib/monitors.js';
 import {buildPresetsEditor} from '../extension/lib/presetsEditor.js';
 import {MonitorRow} from './monitorRow.js';
@@ -203,10 +204,14 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
         if (request !== this._followRequest)
             return;
+        const preset = this._presets().find(([name]) => name === active);
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
-            if (row && row.request === rowRequests.get(display.bus))
-                row.percent = display.percent;
+            if (!row || row.request !== rowRequests.get(display.bus))
+                continue;
+            row.percent = display.percent;
+            if (preset && display.current === percentToValue(preset[1], display.max))
+                row.note = null;
         }
     }
 

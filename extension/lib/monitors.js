@@ -173,6 +173,7 @@ export class Monitors {
         return {
             displays: displays.flatMap((display, i) => readings[i] === null ? [] : [{
                 ...display,
+                current: readings[i].current,
                 percent: valueToPercent(readings[i].current, readings[i].max),
             }]),
             unreachable: [...unreachable, ...silent.map(({bus, name}) => ({bus, name, reason: 'silent'}))],

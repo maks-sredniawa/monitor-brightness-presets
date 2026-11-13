@@ -110,6 +110,19 @@ step('a monitor that rejects a write keeps its slider, shows the note and is rea
     assertEqual(win._monitorRows.get(4).percent, 100, 'other monitor');
 });
 
+step('a pick made elsewhere keeps the note on a monitor that is not at that preset', async (win, settings) => {
+    settings.set_string('active-preset', 'Evening');
+    await until(() => win._monitorRows.get(4).percent === 70, 'read back');
+    assertEqual(win._monitorRows.get(6).note !== null, true, 'note kept');
+});
+
+step('a pick made elsewhere that the monitor shows clears its note', async (win, settings) => {
+    settings.set_value('presets', new GLib.Variant('a(si)', [['Day', 100], ['Forty', 40]]));
+    settings.set_string('active-preset', 'Forty');
+    await until(() => win._monitorRows.get(6).note === null, 'note cleared');
+    assertEqual(win._monitorRows.get(6).percent, 40, 'slider');
+});
+
 step('editing presets in the app rebuilds the preset rows', async (win, settings) => {
     win.activate_action('edit-presets', null);
     await until(() => win.get_visible_dialog() !== null, 'edit dialog');
