@@ -1,7 +1,7 @@
 {
   "uuid": "monitor-brightness-presets@maksforge.com",
   "name": "Monitor brightness presets",
-  "description": "Keeps a few brightness presets, optionally with contrast, and switches every monitor between them from Quick Settings, whatever their make, over DDC/CI with ddcutil.",
+  "description": "Keeps a few brightness presets, optionally with contrast, and switches every monitor between them from Quick Settings or on a daily schedule, whatever their make, over DDC/CI with ddcutil.",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.monitor-brightness-presets"
 }

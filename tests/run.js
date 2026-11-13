@@ -7,6 +7,10 @@ import {DdcutilMissingError, Monitors, NoMonitorsError} from '../extension/lib/m
 import {format} from '../extension/lib/format.js';
 import {collectPresets, readPresets} from '../extension/lib/presets.js';
 import {acceptedBrightness, describeProblems} from '../extension/lib/problems.js';
+import {
+    catchUpSlot, currentSlot, formatTime, handledAfterEdit, meridiem, nextChange, nextChangeLabel, nextFreeHour,
+    normalizeSchedule, readSchedule, renameInSchedule, scheduleStatus,
+} from '../extension/lib/schedule.js';
 
 const testsDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const fakeBin = GLib.build_filenamev([testsDir, 'fake-bin']);
@@ -559,6 +563,165 @@ test('a monitor that rejected both is named only in the sentence for both', () =
         'PL did not change its brightness or contrast. Its own menu may be locking them, for example an ECO mode or picture preset.',
         'DP-3 is in use by another program, such as the ddcci kernel module, so it was left as it is.',
     ].join(' '));
+});
+
+const WARSAW = GLib.TimeZone.new_identifier('Europe/Warsaw');
+const at = (month, day, hour, minute, second = 0) => GLib.DateTime.new(WARSAW, 2026, month, day, hour, minute, second);
+const unix = (...args) => at(...args).to_unix();
+const DAY_EVENING_NIGHT = normalizeSchedule([[450, 'Day'], [1080, 'Evening'], [1350, 'Night']]);
+const ALL = ['Day', 'Evening', 'Night'];
+const slotOf = slot => slot && [slot.preset, slot.at];
+
+test('normalizeSchedule sorts by time, drops times outside the day and keeps the first of equal times', () => {
+    assertEqual(normalizeSchedule([[1350, 'Night'], [450, 'Day'], [-1, 'Bad'], [1440, 'Late'], [450, 'Dup'], [12.5, 'Half'], [0, 'Midnight']]), [
+        {minutes: 0, preset: 'Midnight'},
+        {minutes: 450, preset: 'Day'},
+        {minutes: 1350, preset: 'Night'},
+    ]);
+});
+
+test('readSchedule tolerates a hand-edited key', () => {
+    const settings = memorySettings();
+    settings.set_value('schedule', new GLib.Variant('a(is)', [[1350, 'Night'], [450, 'Day'], [450, 'Other'], [5000, 'Never']]));
+    assertEqual(readSchedule(settings), [{minutes: 450, preset: 'Day'}, {minutes: 1350, preset: 'Night'}]);
+    assertEqual(readSchedule(memorySettings()), []);
+});
+
+test('the current slot is the latest time at or before now', () => {
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 10, 12, 0))), ['Day', unix(6, 10, 7, 30)]);
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 10, 18, 0))), ['Evening', unix(6, 10, 18, 0)]);
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 10, 17, 59, 59))), ['Day', unix(6, 10, 7, 30)]);
+});
+
+test('the current slot wraps past midnight to yesterday’s last time', () => {
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 10, 3, 0))), ['Night', unix(6, 9, 22, 30)]);
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 10, 0, 0))), ['Night', unix(6, 9, 22, 30)]);
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, ALL, at(6, 1, 3, 0))), ['Night', unix(5, 31, 22, 30)]);
+});
+
+test('a single time is the current slot all day and the next change every day', () => {
+    const one = normalizeSchedule([[1080, 'Evening']]);
+    assertEqual(slotOf(currentSlot(one, ALL, at(6, 10, 9, 0))), ['Evening', unix(6, 9, 18, 0)]);
+    assertEqual(slotOf(currentSlot(one, ALL, at(6, 10, 19, 0))), ['Evening', unix(6, 10, 18, 0)]);
+    assertEqual(slotOf(nextChange(one, ALL, at(6, 10, 9, 0))), ['Evening', unix(6, 10, 18, 0)]);
+    assertEqual(slotOf(nextChange(one, ALL, at(6, 10, 18, 0))), ['Evening', unix(6, 11, 18, 0)]);
+});
+
+test('an empty schedule has no slot and no next change', () => {
+    assertEqual(currentSlot([], ALL, at(6, 10, 12, 0)), null);
+    assertEqual(nextChange([], ALL, at(6, 10, 12, 0)), null);
+    assertEqual(catchUpSlot({enabled: true, entries: [], names: ALL, handled: 0, now: at(6, 10, 12, 0)}), null);
+});
+
+test('the next change is strictly after now and wraps to tomorrow', () => {
+    assertEqual(slotOf(nextChange(DAY_EVENING_NIGHT, ALL, at(6, 10, 12, 0))), ['Evening', unix(6, 10, 18, 0)]);
+    assertEqual(slotOf(nextChange(DAY_EVENING_NIGHT, ALL, at(6, 10, 18, 0))), ['Night', unix(6, 10, 22, 30)]);
+    assertEqual(slotOf(nextChange(DAY_EVENING_NIGHT, ALL, at(6, 10, 23, 0))), ['Day', unix(6, 11, 7, 30)]);
+});
+
+test('a time whose preset was removed is skipped: the slot falls back to the time before it', () => {
+    const names = ['Day', 'Night'];
+    assertEqual(slotOf(currentSlot(DAY_EVENING_NIGHT, names, at(6, 10, 19, 0))), ['Day', unix(6, 10, 7, 30)]);
+    assertEqual(slotOf(nextChange(DAY_EVENING_NIGHT, names, at(6, 10, 12, 0))), ['Night', unix(6, 10, 22, 30)]);
+    assertEqual(currentSlot(DAY_EVENING_NIGHT, [], at(6, 10, 19, 0)), null);
+    assertEqual(nextChange(DAY_EVENING_NIGHT, ['Other'], at(6, 10, 19, 0)), null);
+});
+
+test('local time follows daylight saving: the wall-clock time is kept across the change', () => {
+    const entries = normalizeSchedule([[150, 'Gap'], [480, 'Day'], [1350, 'Night']]);
+    const names = ['Gap', 'Day', 'Night'];
+    const springNight = at(3, 29, 1, 0);
+    assertEqual(nextChange(entries, names, springNight).preset, 'Gap');
+    assertEqual(nextChange(entries, names, at(3, 29, 3, 30)).at - at(3, 29, 3, 30).to_unix(), (8 - 3.5) * 3600);
+    assertEqual(unix(3, 29, 8, 0) - springNight.to_unix(), 6 * 3600);
+    const gapSlot = currentSlot(entries, names, at(3, 29, 3, 30));
+    assertEqual(gapSlot.preset, 'Gap');
+    assertEqual(gapSlot.at <= at(3, 29, 3, 30).to_unix(), true);
+    assertEqual(slotOf(currentSlot(entries, names, at(10, 25, 12, 0))), ['Day', unix(10, 25, 8, 0)]);
+    assertEqual(unix(10, 25, 8, 0) - unix(10, 24, 22, 30), 10.5 * 3600);
+    assertEqual(slotOf(currentSlot(entries, names, at(10, 25, 1, 0))), ['Night', unix(10, 24, 22, 30)]);
+});
+
+test('catch-up applies the current slot only when its time is later than the last one handled', () => {
+    const state = {enabled: true, entries: DAY_EVENING_NIGHT, names: ALL};
+    const evening = unix(6, 10, 18, 0);
+    assertEqual(slotOf(catchUpSlot({...state, handled: unix(6, 10, 7, 30), now: at(6, 10, 19, 0)})), ['Evening', evening]);
+    assertEqual(catchUpSlot({...state, handled: evening, now: at(6, 10, 19, 0)}), null);
+    assertEqual(catchUpSlot({...state, enabled: false, handled: 0, now: at(6, 10, 19, 0)}), null);
+});
+
+test('a preset picked by hand stays until the next scheduled time, then catch-up takes over', () => {
+    const state = {enabled: true, entries: DAY_EVENING_NIGHT, names: ALL};
+    const pickedDuringEvening = unix(6, 10, 18, 0);
+    assertEqual(catchUpSlot({...state, handled: pickedDuringEvening, now: at(6, 10, 22, 29)}), null);
+    assertEqual(slotOf(catchUpSlot({...state, handled: pickedDuringEvening, now: at(6, 10, 22, 31)})), ['Night', unix(6, 10, 22, 30)]);
+    assertEqual(slotOf(catchUpSlot({...state, handled: unix(6, 9, 22, 30), now: at(6, 11, 8, 0)})), ['Day', unix(6, 11, 7, 30)]);
+});
+
+test('editing the schedule keeps the current period handled unless a catch-up was still due', () => {
+    const slot = at => ({at});
+    assertEqual(handledAfterEdit({handled: 100, before: slot(100), after: slot(150)}), 150);
+    assertEqual(handledAfterEdit({handled: 100, before: null, after: slot(150)}), 150);
+    assertEqual(handledAfterEdit({handled: 100, before: slot(120), after: slot(150)}), 100);
+    assertEqual(handledAfterEdit({handled: 100, before: slot(100), after: slot(80)}), 100);
+    assertEqual(handledAfterEdit({handled: 100, before: slot(100), after: null}), 100);
+});
+
+test('a new time defaults to the next full hour that is free, wrapping past midnight', () => {
+    assertEqual(nextFreeHour([], at(6, 10, 13, 20)), 14 * 60);
+    assertEqual(nextFreeHour([{minutes: 840}], at(6, 10, 13, 20)), 15 * 60);
+    assertEqual(nextFreeHour([], at(6, 10, 23, 10)), 0);
+    const full = Array.from({length: 24}, (_v, hour) => ({minutes: hour * 60}));
+    assertEqual(nextFreeHour(full, at(6, 10, 13, 20)), 14 * 60);
+});
+
+test('formatTime shows 24 h with leading zeros and 12 h with AM/PM, never an empty one', () => {
+    assertEqual([formatTime(450, '24h'), formatTime(0, '24h'), formatTime(1439, '24h')], ['07:30', '00:00', '23:59']);
+    assertEqual(formatTime(450, '12h'), `7:30 ${meridiem(7)}`);
+    assertEqual(formatTime(1350, '12h'), `10:30 ${meridiem(22)}`);
+    assertEqual([formatTime(0, '12h'), formatTime(720, '12h')], [`12:00 ${meridiem(0)}`, `12:00 ${meridiem(12)}`]);
+    assertEqual(meridiem(0) !== '' && meridiem(0) !== meridiem(12), true);
+});
+
+test('the status line says what the schedule will do next', () => {
+    const _ = text => text;
+    const base = {enabled: true, entries: DAY_EVENING_NIGHT, names: ALL, now: at(6, 10, 12, 0), clockFormat: '24h'};
+    assertEqual(scheduleStatus({...base, enabled: false}, _), 'Changes presets at set times');
+    assertEqual(scheduleStatus(base, _), 'Next: Evening at 18:00');
+    assertEqual(scheduleStatus({...base, entries: []}, _), 'No times set');
+    assertEqual(scheduleStatus({...base, names: ['Other']}, _), 'Every time points at a removed preset');
+    assertEqual(scheduleStatus({...base, extensionActive: false}, _), 'Needs the Monitor brightness presets extension turned on');
+    assertEqual(scheduleStatus({...base, extensionActive: null}, _), 'Next: Evening at 18:00');
+    assertEqual(nextChangeLabel({...base, now: at(6, 10, 23, 0)}, _), 'Next: Day at 07:30');
+    assertEqual(nextChangeLabel({...base, enabled: false}, _), null);
+    assertEqual(nextChangeLabel({...base, names: []}, _), null);
+});
+
+const named = (name, savedName = name) => ({name, savedName, percent: 50});
+
+test('renaming a saved preset is reported as a rename from the name it was saved under', () => {
+    assertEqual(collectPresets([named('Day'), named('Late', 'Night')]).renames, {Night: 'Late'});
+    assertEqual(collectPresets([named('Day'), named('Night')]).renames, {});
+});
+
+test('a preset whose name is cleared keeps its old name until it is saved again', () => {
+    const night = named('', 'Night');
+    assertEqual(collectPresets([named('Day'), night]).renames, {});
+    night.name = 'Late';
+    assertEqual(collectPresets([named('Day'), night]).renames, {Night: 'Late'});
+});
+
+test('a duplicate is not renamed, and a name another preset took over is not carried away', () => {
+    assertEqual(collectPresets([named('Day'), named('Day', 'Night')]).renames, {});
+    assertEqual(collectPresets([named('Night', 'Day'), named('Dusk', 'Night')]).renames, {Day: 'Night'});
+    assertEqual(collectPresets([named('Night'), named('Dusk', 'Night')]).renames, {});
+    assertEqual(collectPresets([named('New', '')]).renames, {});
+});
+
+test('renameInSchedule moves every time of a renamed preset and leaves the rest', () => {
+    const raw = [[450, 'Day'], [1080, 'Evening'], [1200, 'Day'], [1350, 'Gone']];
+    assertEqual(renameInSchedule(raw, {Day: 'Daylight', Gone: 'Back'}), [[450, 'Daylight'], [1080, 'Evening'], [1200, 'Daylight'], [1350, 'Back']]);
+    assertEqual(renameInSchedule(raw, {Day: 'Evening', Evening: 'Day'}), [[450, 'Evening'], [1080, 'Day'], [1200, 'Evening'], [1350, 'Gone']]);
 });
 
 const loop = new GLib.MainLoop(null, false);

@@ -16,5 +16,20 @@
       <default>''</default>
       <summary>The preset applied last</summary>
     </key>
+    <key name="schedule-enabled" type="b">
+      <default>false</default>
+      <summary>Follow the schedule</summary>
+      <description>When on, the extension applies each scheduled preset at its time, every day.</description>
+    </key>
+    <key name="schedule" type="a(is)">
+      <default>[]</default>
+      <summary>Daily schedule</summary>
+      <description>Each entry is a time in minutes after midnight (0 to 1439) and the name of the preset to apply then, sorted by time. Of two entries with the same time the first is used; an entry whose preset does not exist is skipped.</description>
+    </key>
+    <key name="schedule-handled" type="x">
+      <default>0</default>
+      <summary>Last scheduled time handled</summary>
+      <description>Unix time of the last scheduled change that was applied or overridden by a preset picked by hand. On login, unlock and wake the current scheduled preset is applied only if its time is later than this.</description>
+    </key>
   </schema>
 </schemalist>

@@ -6,6 +6,7 @@ import Gtk from 'gi://Gtk';
 import {format} from './format.js';
 import {contrastIcon} from './icons.js';
 import {collectPresets, readPresets} from './presets.js';
+import {renameInSchedule} from './schedule.js';
 
 const DEFAULT_CONTRAST = 50;
 
@@ -91,7 +92,7 @@ export function buildPresetsEditor(settings, _) {
         description: _('Each preset sets every monitor to the same brightness. Presets without a name, or with the name of a preset above them, are not saved.'),
     });
 
-    // Presets and their contrasts must land in one write, and delaying the caller's own
+    // Presets, their contrasts and renamed schedule times must land in one write, and delaying the caller's own
     // settings object would also hold back its writes of the active preset.
     const writer = new Gio.Settings({settings_schema: settings.settings_schema, backend: settings.backend});
     writer.delay();
@@ -106,7 +107,7 @@ export function buildPresetsEditor(settings, _) {
             row.percent = row.spin.get_value_as_int();
             row.contrast = row.contrastControl.current();
         }
-        const {presets, contrasts, duplicates, active} = collectPresets(rows, activeRow);
+        const {presets, contrasts, duplicates, renames, saved, active} = collectPresets(rows, activeRow);
         for (const row of rows) {
             if (duplicates.has(row))
                 row.entry.add_css_class('error');
@@ -115,7 +116,13 @@ export function buildPresetsEditor(settings, _) {
         }
         writer.set_value('presets', new GLib.Variant('a(si)', presets));
         writer.set_value('preset-contrast', new GLib.Variant('a{si}', contrasts));
+        if (Object.keys(renames).length > 0) {
+            const schedule = renameInSchedule(writer.get_value('schedule').deepUnpack(), renames);
+            writer.set_value('schedule', new GLib.Variant('a(is)', schedule));
+        }
         writer.apply();
+        for (const row of saved)
+            row.savedName = row.name;
         if (active !== settings.get_string('active-preset')) {
             written = active;
             settings.set_string('active-preset', active);
@@ -147,7 +154,7 @@ export function buildPresetsEditor(settings, _) {
         entry.add_suffix(contrastControl.button);
         entry.add_suffix(remove);
 
-        const row = {entry, spin, contrastControl, name, percent, contrast};
+        const row = {entry, spin, contrastControl, name, savedName: name, percent, contrast};
         rows.push(row);
         group.add(entry);
 

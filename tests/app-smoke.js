@@ -5,6 +5,7 @@ import System from 'system';
 
 import {loadSettings} from '../app/settings.js';
 import {BrightnessWindow} from '../app/window.js';
+import {currentSlot, formatTime, nextFreeHour, readSchedule, scheduleState} from '../extension/lib/schedule.js';
 
 const testsDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const fakeBin = GLib.build_filenamev([testsDir, 'fake-bin']);
@@ -56,6 +57,12 @@ const children = list => {
 const monitorState = win => [...win._monitorRows.values()].map(row => [row.title, row.percent, row.note !== null]);
 const marks = win => win._presetRows.map(({name, mark}) => `${name}:${mark.visible_child_name}`);
 const settled = win => win._refreshAction.enabled;
+
+const extension = {onChange: null, rechecks: 0};
+const fakeExtensionWatch = onChange => {
+    extension.onChange = onChange;
+    return {recheck: () => extension.rechecks++, destroy: () => (extension.onChange = null)};
+};
 
 const steps = [];
 const step = (name, fn) => steps.push({name, fn});
@@ -325,6 +332,244 @@ step('the editor sets, renames and clears a preset contrast, writing both keys t
     await until(() => win._presetRows.map(row => row.name).join() === 'Daylight', 'preset rows follow');
 });
 
+const PRESETS = [['Day', 100], ['Evening', 60], ['Night', 25]];
+const schedule = settings => readSchedule(settings).map(({minutes, preset}) => [minutes, preset]);
+const setSchedule = (settings, raw) => settings.set_value('schedule', new GLib.Variant('a(is)', raw));
+const scheduleDialog = async win => {
+    win.activate_action('edit-schedule', null);
+    await until(() => win.get_visible_dialog()?.title === 'Schedule', 'schedule dialog');
+    return win.get_visible_dialog();
+};
+const timeRows = dialog => descendants(dialog, Adw.ComboRow);
+const placeholders = dialog => descendants(dialog, Adw.ActionRow).filter(row => row.constructor.$gtype === Adw.ActionRow.$gtype);
+const timeButton = row => descendants(row, Gtk.MenuButton)[0];
+const buttonWith = (widget, icon) => descendants(widget, Gtk.Button).find(button => button.icon_name === icon);
+const comboItems = row => Array.from({length: row.model.get_n_items()}, (_v, i) => row.model.get_string(i));
+const hhmm = minutes => formatTime(minutes, '24h');
+const minutesFromNow = offset => {
+    const now = GLib.DateTime.new_now_local();
+    return (now.get_hour() * 60 + now.get_minute() + offset + 1440) % 1440;
+};
+
+const holdsFocus = widget => {
+    const focus = widget.get_root()?.get_focus();
+    return focus === widget || (focus?.is_ancestor(widget) ?? false);
+};
+
+async function setTime(row, minutes) {
+    const button = timeButton(row);
+    button.popup();
+    await until(() => button.popover.visible, 'time popover');
+    const [hour, minute] = descendants(button.popover, Gtk.SpinButton);
+    assertEqual(holdsFocus(hour), true, 'hour spin focused');
+    hour.value = Math.floor(minutes / 60);
+    minute.value = minutes % 60;
+    assertEqual(button.label, hhmm(minutes), 'label follows the spins');
+    button.popdown();
+    await until(() => !button.popover.visible, 'popover closed');
+}
+
+step('the main window shows the schedule between presets and monitors, off by default', async (win, settings) => {
+    settings.set_value('presets', new GLib.Variant('a(si)', PRESETS));
+    settings.set_value('preset-contrast', new GLib.Variant('a{si}', {}));
+    const titles = descendants(win._stack.get_child_by_name('content'), Adw.PreferencesGroup).map(group => group.title);
+    assertEqual(titles, ['Presets', 'Schedule', 'Monitors'], 'groups');
+    assertEqual([win._scheduleRow.title, win._scheduleRow.active, win._scheduleRow.subtitle],
+        ['Follow Schedule', false, 'Changes presets at set times'], 'switch row');
+    assertEqual(win.default_height, 740, 'window height');
+});
+
+step('the schedule switch turns the schedule on and the status shows what comes next', async (win, settings) => {
+    win._scheduleRow.active = true;
+    assertEqual(settings.get_boolean('schedule-enabled'), true, 'setting');
+    assertEqual(win._scheduleRow.subtitle, 'No times set', 'no times');
+    const soon = minutesFromNow(120);
+    setSchedule(settings, [[soon, 'Night']]);
+    assertEqual(win._scheduleRow.subtitle, `Next: Night at ${hhmm(soon)}`, 'next change');
+    setSchedule(settings, [[soon, 'Gone']]);
+    assertEqual(win._scheduleRow.subtitle, 'Every time points at a removed preset', 'only removed');
+    settings.set_boolean('schedule-enabled', false);
+    assertEqual([win._scheduleRow.active, win._scheduleRow.subtitle], [false, 'Changes presets at set times'], 'off again');
+});
+
+step('the status says when the extension that runs the schedule is off', async win => {
+    extension.onChange(false);
+    assertEqual(win._scheduleRow.subtitle, 'Needs the Monitor brightness presets extension turned on', 'extension off');
+    extension.onChange(null);
+    assertEqual(win._scheduleRow.subtitle, 'Changes presets at set times', 'unknown is not shown as off');
+    extension.onChange(true);
+    assertEqual(win._scheduleRow.subtitle, 'Changes presets at set times', 'extension on');
+    const before = extension.rechecks;
+    win.notify('is-active');
+    assertEqual(extension.rechecks, before + 1, 'rechecked when the window is active again');
+});
+
+step('the schedule dialog starts empty and adds a time at the next free hour, opening its time picker', async (win, settings) => {
+    setSchedule(settings, []);
+    const dialog = await scheduleDialog(win);
+    try {
+        assertEqual(placeholders(dialog).map(row => [row.title, row.subtitle]), [['No times', 'Add one with the add button above.']], 'empty state');
+        const add = buttonWith(dialog, 'list-add-symbolic');
+        assertEqual([add.sensitive, add.tooltip_text], [true, 'Add time'], 'add button');
+        add.emit('clicked');
+        const expected = nextFreeHour([], GLib.DateTime.new_now_local());
+        assertEqual(schedule(settings), [[expected, 'Day']], 'saved at once');
+        assertEqual(placeholders(dialog).length, 0, 'placeholder gone');
+        const [row] = timeRows(dialog);
+        await until(() => timeButton(row).popover.visible, 'time popover opened');
+        timeButton(row).popdown();
+        assertEqual([timeButton(row).label, comboItems(row), row.selected], [hhmm(expected), ['Day', 'Evening', 'Night'], 0], 'row');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('changing a time saves it when the picker closes and keeps the rows sorted', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1350, 'Night']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        const [day] = timeRows(dialog);
+        const writes = [];
+        const watch = settings.connect('changed::schedule', () => writes.push(schedule(settings)));
+        try {
+            await setTime(day, 23 * 60 + 15);
+        } finally {
+            settings.disconnect(watch);
+        }
+        assertEqual(writes, [[[1350, 'Night'], [1395, 'Day']]], 'one write, on close');
+        assertEqual(timeRows(dialog).map(row => timeButton(row).label), ['22:30', '23:15'], 'sorted rows');
+        assertEqual(holdsFocus(timeButton(day)), true, 'focus back on the time button');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('a duplicate time is flagged and not saved until it changes', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1350, 'Night']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        const [, night] = timeRows(dialog);
+        await setTime(night, 450);
+        const [first, second] = timeRows(dialog);
+        assertEqual([first.selected, second.selected], [0, 2], 'the row that had the time first stays on top');
+        assertEqual([timeButton(first).has_css_class('error'), timeButton(second).has_css_class('error')], [false, true], 'flag');
+        assertEqual(timeButton(second).tooltip_text, 'Another time in the list is the same, so this one is not saved.', 'tooltip');
+        assertEqual(schedule(settings), [[450, 'Day']], 'saved');
+        await setTime(second, 1200);
+        assertEqual(timeButton(timeRows(dialog)[1]).has_css_class('error'), false, 'flag cleared');
+        assertEqual(schedule(settings), [[450, 'Day'], [1200, 'Night']], 'saved once unique');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('picking a preset saves it and removing a time drops it', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1350, 'Night']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        timeRows(dialog)[0].selected = 1;
+        assertEqual(schedule(settings), [[450, 'Evening'], [1350, 'Night']], 'preset changed');
+        buttonWith(timeRows(dialog)[1], 'user-trash-symbolic').emit('clicked');
+        assertEqual(schedule(settings), [[450, 'Evening']], 'removed');
+        assertEqual(timeRows(dialog).length, 1, 'rows');
+        buttonWith(timeRows(dialog)[0], 'user-trash-symbolic').emit('clicked');
+        assertEqual(placeholders(dialog).map(row => row.title), ['No times'], 'empty again');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('a time whose preset was removed is shown as removed, stays saved and is repaired by picking a preset', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1080, 'Reading']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        const reading = timeRows(dialog)[1];
+        const warning = descendants(reading, Gtk.Image).find(image => image.icon_name === 'dialog-warning-symbolic');
+        assertEqual([comboItems(reading), reading.selected, warning.visible, warning.tooltip_text],
+            [['Reading (removed)', 'Day', 'Evening', 'Night'], 0, true, 'This preset was removed, so this time is skipped.'], 'removed row');
+        assertEqual(warning.visible, true, 'warning');
+        assertEqual(warning.visible && !descendants(timeRows(dialog)[0], Gtk.Image).find(image => image.icon_name === 'dialog-warning-symbolic').visible, true, 'only on the removed row');
+        settings.set_boolean('schedule-enabled', true);
+        assertEqual(win._scheduleRow.subtitle.startsWith('Next: Day at 07:30'), true, 'status skips it');
+        settings.set_boolean('schedule-enabled', false);
+        reading.selected = 3;
+        assertEqual(schedule(settings), [[450, 'Day'], [1080, 'Night']], 'repaired');
+        await until(() => comboItems(reading).length === 3 && !warning.visible, 'removed item dropped');
+        assertEqual(reading.selected, 2, 'selection kept');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('with no presets the schedule says so and cannot add, but keeps the times', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day']]);
+    const dialog = await scheduleDialog(win);
+    try {
+        settings.set_value('presets', new GLib.Variant('a(si)', []));
+        assertEqual(placeholders(dialog).map(row => [row.title, row.subtitle]), [['No presets to schedule', 'Add a preset first.']], 'placeholder');
+        assertEqual(buttonWith(dialog, 'list-add-symbolic').sensitive, false, 'add disabled');
+        assertEqual(comboItems(timeRows(dialog)[0]), ['Day (removed)'], 'time kept as removed');
+        settings.set_value('presets', new GLib.Variant('a(si)', PRESETS));
+        assertEqual([placeholders(dialog).length, buttonWith(dialog, 'list-add-symbolic').sensitive], [0, true], 'back');
+        assertEqual(schedule(settings), [[450, 'Day']], 'schedule untouched');
+    } finally {
+        dialog.force_close();
+    }
+});
+
+step('renaming a preset carries its times along, in the same write as the presets', async (win, settings) => {
+    setSchedule(settings, [[450, 'Day'], [1080, 'Evening'], [1200, 'Day']]);
+    win.activate_action('edit-presets', null);
+    await until(() => win.get_visible_dialog() !== null, 'edit dialog');
+    const dialog = win.get_visible_dialog();
+    const pairs = [];
+    const watch = settings.connect('changed::presets', () => pairs.push([
+        settings.get_value('presets').deepUnpack().map(([name]) => name).join(),
+        schedule(settings).map(([, preset]) => preset).join(),
+    ]));
+    try {
+        const [day] = descendants(dialog, Adw.EntryRow);
+        day.text = '';
+        assertEqual(schedule(settings).map(([, preset]) => preset), ['Day', 'Evening', 'Day'], 'kept while unnamed');
+        day.text = 'Daylight';
+        assertEqual(pairs.at(-1), ['Daylight,Evening,Night', 'Daylight,Evening,Daylight'], 'carried in one write');
+        descendants(dialog, Adw.EntryRow)[1].text = 'Daylight';
+        assertEqual(schedule(settings).map(([, preset]) => preset), ['Daylight', 'Evening', 'Daylight'], 'a duplicate carries nothing');
+        descendants(dialog, Adw.EntryRow)[1].text = 'Evening';
+        buttonWith(descendants(dialog, Adw.EntryRow)[1], 'user-trash-symbolic').emit('clicked');
+        assertEqual(schedule(settings).map(([, preset]) => preset), ['Daylight', 'Evening', 'Daylight'], 'removing leaves its times');
+    } finally {
+        settings.disconnect(watch);
+        dialog.force_close();
+    }
+    settings.set_value('presets', new GLib.Variant('a(si)', PRESETS));
+});
+
+step('a preset picked by hand while the schedule is on marks the current time as handled', async (win, settings) => {
+    useFake();
+    const earlier = minutesFromNow(-60);
+    setSchedule(settings, [[earlier, 'Day']]);
+    settings.set_int64('schedule-handled', 0);
+    children(win._presetList)[2].emit('activated');
+    await until(() => settings.get_string('active-preset') === 'Night' && win._pendingPreset === null, 'Night applied');
+    assertEqual(settings.get_int64('schedule-handled'), 0, 'schedule off: untouched');
+    settings.set_boolean('schedule-enabled', true);
+    children(win._presetList)[1].emit('activated');
+    await until(() => settings.get_string('active-preset') === 'Evening' && win._pendingPreset === null, 'Evening applied');
+    const state = scheduleState(settings, GLib.DateTime.new_now_local());
+    assertEqual(settings.get_int64('schedule-handled'), currentSlot(state.entries, state.names, state.now).at, 'handled');
+    settings.set_boolean('schedule-enabled', false);
+});
+
+step('the shortcuts dialog lists Edit schedule', async win => {
+    win.activate_action('shortcuts', null);
+    await until(() => win.get_visible_dialog() instanceof Adw.ShortcutsDialog, 'shortcuts');
+    const items = descendants(win.get_visible_dialog(), Gtk.Widget).filter(widget => widget instanceof Adw.ShortcutsItem);
+    win.get_visible_dialog().force_close();
+    if (items.length > 0)
+        assertEqual(items.some(item => item.title === 'Edit schedule'), true, 'item');
+});
+
 step('the extension preferences window builds the presets editor', async (win, settings) => {
     const extensionDir = GLib.build_filenamev([testsDir, '..', 'extension']);
     const dir = GLib.dir_make_tmp('prefs-smoke-XXXXXX');
@@ -349,7 +594,12 @@ export class ExtensionPreferences {
         const rows = descendants(window, Adw.EntryRow);
         assertEqual(rows.map(row => row.text), settings.get_value('presets').deepUnpack().map(([name]) => name), 'editor rows');
         assertEqual(rows.map(row => descendants(row, Gtk.MenuButton).length), rows.map(() => 1), 'contrast buttons');
-        window.destroy();
+        const groups = descendants(window, Adw.PreferencesGroup);
+        assertEqual(groups.map(group => group.title).filter(Boolean), ['Presets', 'Schedule'], 'groups on one page');
+        const [toggle] = descendants(groups[1], Adw.SwitchRow);
+        assertEqual([toggle.title, toggle.subtitle], ['Follow Schedule', 'Changes presets at set times'], 'schedule switch');
+        assertEqual(descendants(groups[1], Adw.ComboRow).length, readSchedule(settings).length, 'schedule rows');
+        window.close();
     } finally {
         for (const file of [stub, prefs])
             GLib.unlink(file);
@@ -362,7 +612,7 @@ let failures = 0;
 const app = new Adw.Application({application_id: 'com.maksforge.MonitorBrightnessPresets.Smoke'});
 app.connect('activate', async () => {
     const settings = loadSettings();
-    const win = new BrightnessWindow(app, settings);
+    const win = new BrightnessWindow(app, settings, {watchExtensionState: fakeExtensionWatch});
     win.present();
     for (const {name, fn} of steps) {
         try {
