@@ -85,7 +85,6 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             handlers.forEach(id => settings.disconnect(id));
             this._scheduleStatus.destroy();
             this._extensionWatch.destroy();
-            Gio.Settings.unbind(this._scheduleRow, 'active');
             screens.disconnect(replug);
             if (this._replugTimer)
                 GLib.source_remove(this._replugTimer);

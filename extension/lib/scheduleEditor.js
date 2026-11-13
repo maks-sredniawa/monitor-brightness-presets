@@ -124,12 +124,15 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
 
     const toggle = new Adw.SwitchRow({title: _('Follow Schedule'), use_markup: false});
     settings.bind('schedule-enabled', toggle, 'active', Gio.SettingsBindFlags.DEFAULT);
-    group.add(toggle);
+    const list = new Gtk.ListBox({selection_mode: Gtk.SelectionMode.NONE, css_classes: ['boxed-list']});
+    list.append(toggle);
+    group.add(list);
     const status = watchStatus(settings, _, {extensionActive, onText: text => (toggle.subtitle = text)});
 
     const clock = interfaceSettings();
     let rows = [];
-    let shown = [];
+    let placeholder = null;
+    const shown = new Set();
     let openPopovers = 0;
     let rebuildWhenClosed = false;
     let syncing = false;
@@ -176,7 +179,8 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
         row.missing = !names.includes(row.preset);
         row.choices = names;
         syncing = true;
-        row.combo.model = Gtk.StringList.new(row.missing ? [format(_('%s (removed)'), row.preset), ...names] : names);
+        const items = row.missing ? [format(_('%s (removed)'), row.preset), ...names] : names;
+        row.items.splice(0, row.items.get_n_items(), items);
         row.combo.selected = row.missing ? 0 : names.indexOf(row.preset);
         syncing = false;
         row.warning.visible = row.missing;
@@ -186,19 +190,44 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
             row.combo.reset_property(Gtk.AccessibleProperty.DESCRIPTION);
     };
 
+    const position = widget => {
+        if (widget === toggle)
+            return -2;
+        if (widget === placeholder)
+            return -1;
+        return rows.findIndex(row => row.combo === widget);
+    };
+    list.set_sort_func((a, b) => position(a) - position(b));
+
     const layout = () => {
-        for (const widget of shown)
-            group.remove(widget);
-        shown = rows.map(row => row.combo);
+        const combos = new Set(rows.map(row => row.combo));
+        for (const combo of shown) {
+            if (!combos.has(combo)) {
+                list.remove(combo);
+                shown.delete(combo);
+            }
+        }
+        for (const combo of combos) {
+            if (!shown.has(combo)) {
+                list.append(combo);
+                shown.add(combo);
+            }
+        }
 
         const hasPresets = presetNames().length > 0;
         add.sensitive = hasPresets;
-        if (!hasPresets)
-            shown.unshift(new Adw.ActionRow({title: _('No presets to schedule'), subtitle: _('Add a preset first.')}));
-        else if (rows.length === 0)
-            shown.unshift(new Adw.ActionRow({title: _('No times'), subtitle: _('Add one with the add button above.')}));
-        for (const widget of shown)
-            group.add(widget);
+        const [title, subtitle] = !hasPresets ? [_('No presets to schedule'), _('Add a preset first.')]
+            : rows.length === 0 ? [_('No times'), _('Add one with the add button above.')] : [null, null];
+        if (title && !placeholder) {
+            placeholder = new Adw.ActionRow({title, subtitle});
+            list.append(placeholder);
+        } else if (title) {
+            placeholder.set({title, subtitle});
+        } else if (placeholder) {
+            list.remove(placeholder);
+            placeholder = null;
+        }
+        list.invalidate_sort();
     };
 
     const insertSorted = row => {
@@ -216,7 +245,8 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
 
     const buildRow = (minutes, preset) => {
         const row = {minutes, preset};
-        row.combo = new Adw.ComboRow({use_subtitle: false});
+        row.items = new Gtk.StringList();
+        row.combo = new Adw.ComboRow({use_subtitle: false, model: row.items});
         row.combo.update_property([Gtk.AccessibleProperty.LABEL], [_('Preset')]);
 
         const picker = buildTimePicker(minutes, clockFormat(clock) === '12h', value => showTime(row, value), _);
@@ -339,7 +369,6 @@ export function buildScheduleEditor(settings, _, {extensionActive = () => null} 
             handlers.forEach(id => settings.disconnect(id));
             if (clockHandler)
                 clock.disconnect(clockHandler);
-            Gio.Settings.unbind(toggle, 'active');
             status.destroy();
         },
     };
