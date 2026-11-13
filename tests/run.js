@@ -4,7 +4,9 @@ import System from 'system';
 
 import {parseBrightness, parseDisplays, parseVcp, percentToValue, valueToPercent} from '../extension/lib/ddc.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError} from '../extension/lib/monitors.js';
+import {format} from '../extension/lib/format.js';
 import {collectPresets, readPresets} from '../extension/lib/presets.js';
+import {acceptedBrightness, describeProblems} from '../extension/lib/problems.js';
 
 const testsDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const fakeBin = GLib.build_filenamev([testsDir, 'fake-bin']);
@@ -512,6 +514,40 @@ test('typing the active name into a row above it ticks neither, until the clash 
 
 test('naming a new preset does not mark it active when none is', () => {
     assertEqual(collectPresets([row('Day', 100), row('Dusk', 40)]).active, '');
+});
+
+test('format fills %s and %d in order and keeps a literal percent', () => {
+    assertEqual(format('%s, brightness %d%%, contrast %d%%', 'Evening', 60, 80), 'Evening, brightness 60%, contrast 80%');
+});
+
+const ngettext = (singular, plural, count) => count === 1 ? singular : plural;
+const lg = {bus: 4, name: 'LG'};
+const pl = {bus: 6, name: 'PL'};
+const dell = {bus: 7, name: 'Dell'};
+
+test('a preset ticks when at least one monitor took its brightness, whatever its contrast did', () => {
+    assertEqual(acceptedBrightness([lg, pl], {6: ['contrast'], 4: ['contrast']}), true);
+    assertEqual(acceptedBrightness([lg, pl], {4: ['brightness'], 6: ['brightness', 'contrast']}), false);
+    assertEqual(acceptedBrightness([], {}), false);
+});
+
+test('rejected brightness keeps its sentence unchanged', () => {
+    assertEqual(describeProblems(ngettext, [pl], {6: ['brightness']}, []),
+        'PL did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.');
+});
+
+test('rejected contrast gets its own sentence, in the plural for several monitors', () => {
+    assertEqual(describeProblems(ngettext, [lg, pl], {4: ['contrast'], 6: ['contrast']}, []),
+        'LG and PL did not change their contrast. Their own menus may be locking them, for example an ECO mode or picture preset.');
+});
+
+test('a monitor that rejected both is named only in the sentence for both', () => {
+    assertEqual(describeProblems(ngettext, [lg, pl, dell], {4: ['brightness'], 6: ['brightness', 'contrast'], 7: ['contrast']}, [{name: 'DP-3', reason: 'busy'}]), [
+        'LG did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.',
+        'Dell did not change its contrast. Its own menu may be locking it, for example an ECO mode or picture preset.',
+        'PL did not change its brightness or contrast. Its own menu may be locking them, for example an ECO mode or picture preset.',
+        'DP-3 is in use by another program, such as the ddcci kernel module, so it was left as it is.',
+    ].join(' '));
 });
 
 const loop = new GLib.MainLoop(null, false);

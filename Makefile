@@ -33,4 +33,4 @@ enable:
 
 pack:
 	mkdir -p dist
-	gnome-extensions pack extension --extra-source=lib --force --out-dir=dist
+	gnome-extensions pack extension --extra-source=lib --extra-source=icons --force --out-dir=dist

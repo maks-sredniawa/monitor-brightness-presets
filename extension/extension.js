@@ -8,39 +8,14 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import {Extension, gettext as _, ngettext} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import {format} from './lib/format.js';
+import {contrastIcon} from './lib/icons.js';
 import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from './lib/monitors.js';
+import {readPresets} from './lib/presets.js';
+import {acceptedBrightness, describeProblems} from './lib/problems.js';
 
 const ICON = 'display-brightness-symbolic';
 const APP_ID = 'com.maksforge.MonitorBrightnessPresets.desktop';
-
-function listNames(displays) {
-    return new Intl.ListFormat(undefined, {type: 'conjunction'}).format(displays.map(display => display.name));
-}
-
-function describeProblems(failed, unreachable) {
-    const sentences = [];
-    if (failed.length > 0) {
-        sentences.push(ngettext(
-            '%s did not change its brightness. Its own menu may be locking it, for example an ECO mode or picture preset.',
-            '%s did not change their brightness. Their own menus may be locking them, for example an ECO mode or picture preset.',
-            failed.length).format(listNames(failed)));
-    }
-    const busy = unreachable.filter(display => display.reason === 'busy');
-    const silent = unreachable.filter(display => display.reason !== 'busy');
-    if (busy.length > 0) {
-        sentences.push(ngettext(
-            '%s is in use by another program, such as the ddcci kernel module, so it was left as it is.',
-            '%s are in use by another program, such as the ddcci kernel module, so they were left as they are.',
-            busy.length).format(listNames(busy)));
-    }
-    if (silent.length > 0) {
-        sentences.push(ngettext(
-            '%s did not answer over DDC/CI. Check that DDC/CI is on in its own menu.',
-            '%s did not answer over DDC/CI. Check that DDC/CI is on in each one’s own menu.',
-            silent.length).format(listNames(silent)));
-    }
-    return sentences.join(' ');
-}
 
 const PresetsToggle = GObject.registerClass(
 class PresetsToggle extends QuickMenuToggle {
@@ -73,42 +48,61 @@ class PresetsToggle extends QuickMenuToggle {
     }
 
     _sync() {
-        const presets = this._settings.get_value('presets').deepUnpack();
+        const presets = readPresets(this._settings);
         const active = this._settings.get_string('active-preset');
-        this.subtitle = presets.some(([name]) => name === active) ? active : null;
+        this.subtitle = presets.some(({name}) => name === active) ? active : null;
+        const withContrast = presets.some(({contrast}) => contrast !== null);
 
         this._presetSection.removeAll();
-        for (const [name, percent] of presets) {
-            const item = new PopupMenu.PopupMenuItem(name);
+        for (const preset of presets) {
+            const item = new PopupMenu.PopupMenuItem(preset.name);
             item.add_child(new St.Label({
-                text: `${percent}%`,
+                text: `${preset.brightness}%`,
                 x_expand: true,
                 x_align: Clutter.ActorAlign.END,
                 y_align: Clutter.ActorAlign.CENTER,
             }));
-            item.setOrnament(name === active ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
-            item.connect('activate', () => this._apply(name, percent));
+            if (withContrast)
+                item.add_child(this._contrastSlot(preset.contrast));
+            item.accessible_name = preset.contrast === null
+                ? format(_('%s, brightness %d%%'), preset.name, preset.brightness)
+                : format(_('%s, brightness %d%%, contrast %d%%'), preset.name, preset.brightness, preset.contrast);
+            item.setOrnament(preset.name === active ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
+            item.connect('activate', () => this._apply(preset));
             this._presetSection.addMenuItem(item);
         }
     }
 
-    async _apply(name, percent) {
+    _contrastSlot(contrast) {
+        const slot = new St.BoxLayout({
+            style: 'min-width: 4.5em; spacing: 4px;',
+            x_align: Clutter.ActorAlign.END,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        if (contrast === null)
+            return slot;
+        slot.add_child(new St.Icon({gicon: contrastIcon(), style_class: 'popup-menu-icon', y_align: Clutter.ActorAlign.CENTER}));
+        slot.add_child(new St.Label({text: `${contrast}%`, y_align: Clutter.ActorAlign.CENTER}));
+        return slot;
+    }
+
+    async _apply({name, brightness, contrast}) {
         const request = ++this._request;
         try {
-            const {displays, failed, unreachable} = await this._monitors.setBrightness(percent);
+            const {displays, failed, rejected, unreachable} = await this._monitors.apply({brightness, contrast});
             if (request !== this._request)
                 return;
-            if (failed.length < displays.length)
+            if (acceptedBrightness(displays, rejected))
                 this._settings.set_string('active-preset', name);
             if (failed.length > 0 || unreachable.length > 0)
-                Main.notify(_('Brightness preset'), describeProblems(failed, unreachable));
+                Main.notify(_('Brightness preset'), describeProblems(ngettext, failed, rejected, unreachable));
         } catch (error) {
             if (request !== this._request || isCancelled(error))
                 return;
             if (error instanceof DdcutilMissingError) {
                 Main.notify(_('Brightness preset'), _('Install ddcutil to control your monitors.'));
             } else if (error instanceof NoMonitorsError && error.unreachable.length > 0) {
-                Main.notify(_('Brightness preset'), describeProblems([], error.unreachable));
+                Main.notify(_('Brightness preset'), describeProblems(ngettext, [], {}, error.unreachable));
             } else if (error instanceof NoMonitorsError) {
                 Main.notify(_('Brightness preset'),
                     _('No monitor answered over DDC/CI. Check that DDC/CI is on in each monitor’s own menu.'));
