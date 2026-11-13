@@ -11,7 +11,7 @@ import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from '../ex
 import {readPresets} from '../extension/lib/presets.js';
 import {buildPresetsEditor} from '../extension/lib/presetsEditor.js';
 import {acceptedBrightness} from '../extension/lib/problems.js';
-import {currentSlot, scheduleState} from '../extension/lib/schedule.js';
+import {markHandPick} from '../extension/lib/schedule.js';
 import {buildScheduleEditor, watchStatus} from '../extension/lib/scheduleEditor.js';
 import {watchExtension} from './extensionState.js';
 import {MonitorRow} from './monitorRow.js';
@@ -312,19 +312,10 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             editor.syncStatus();
     }
 
-    _markHandPick() {
-        const state = scheduleState(this._settings, GLib.DateTime.new_now_local());
-        if (!state.enabled)
-            return;
-        const slot = currentSlot(state.entries, state.names, state.now);
-        if (slot && slot.at > state.handled)
-            this._settings.set_int64('schedule-handled', slot.at);
-    }
-
     async _applyPreset(preset) {
         const {name, brightness, contrast} = preset;
         const request = ++this._presetRequest;
-        this._markHandPick();
+        markHandPick(this._settings, GLib.DateTime.new_now_local());
         this._pendingPreset = name;
         this._syncPresetMarks();
         const features = contrast === null ? ['brightness'] : ['brightness', 'contrast'];

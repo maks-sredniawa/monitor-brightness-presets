@@ -16,8 +16,8 @@ import {DdcutilMissingError, Monitors, NoMonitorsError, isCancelled} from './lib
 import {readPresets} from './lib/presets.js';
 import {acceptedBrightness, describeProblems} from './lib/problems.js';
 import {
-    catchUpSlot, clockFormat, currentSlot, handledAfterEdit, interfaceSettings, msUntil, nextChange, nextChangeLabel,
-    scheduleState,
+    catchUpSlot, clockFormat, currentSlot, handledAfterEdit, interfaceSettings, markHandPick, msUntil, nextChange,
+    nextChangeLabel, scheduleState,
 } from './lib/schedule.js';
 
 const ICON = 'display-brightness-symbolic';
@@ -166,15 +166,6 @@ class PresetsToggle extends QuickMenuToggle {
             this._apply(preset, {reason, slotAt: slot.at});
     }
 
-    _markHandPick() {
-        const state = this._schedule();
-        if (!state.enabled)
-            return;
-        const slot = currentSlot(state.entries, state.names, state.now);
-        if (slot && slot.at > state.handled)
-            this._settings.set_int64('schedule-handled', slot.at);
-    }
-
     _syncOpenApp() {
         this._openApp.visible = Shell.AppSystem.get_default().lookup_app(APP_ID) !== null;
     }
@@ -226,7 +217,7 @@ class PresetsToggle extends QuickMenuToggle {
     async _apply({name, brightness, contrast}, {reason = 'hand', slotAt = 0} = {}) {
         const request = ++this._request;
         if (reason === 'hand')
-            this._markHandPick();
+            markHandPick(this._settings, GLib.DateTime.new_now_local());
         const title = reason === 'hand' ? _('Brightness preset') : _('Brightness schedule');
         const notify = body => {
             if (reason !== 'catch-up')

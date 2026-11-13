@@ -8,8 +8,8 @@ import {format} from '../extension/lib/format.js';
 import {collectPresets, readPresets} from '../extension/lib/presets.js';
 import {acceptedBrightness, describeProblems} from '../extension/lib/problems.js';
 import {
-    catchUpSlot, currentSlot, formatTime, handledAfterEdit, meridiem, nextChange, nextChangeLabel, nextFreeHour,
-    normalizeSchedule, readSchedule, renameInSchedule, scheduleStatus,
+    catchUpSlot, currentSlot, formatTime, handledAfterEdit, markHandPick, meridiem, nextChange, nextChangeLabel,
+    nextFreeHour, normalizeSchedule, readSchedule, renameInSchedule, scheduleState, scheduleStatus,
 } from '../extension/lib/schedule.js';
 
 const testsDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
@@ -656,6 +656,23 @@ test('a preset picked by hand stays until the next scheduled time, then catch-up
     assertEqual(catchUpSlot({...state, handled: pickedDuringEvening, now: at(6, 10, 22, 29)}), null);
     assertEqual(slotOf(catchUpSlot({...state, handled: pickedDuringEvening, now: at(6, 10, 22, 31)})), ['Night', unix(6, 10, 22, 30)]);
     assertEqual(slotOf(catchUpSlot({...state, handled: unix(6, 9, 22, 30), now: at(6, 11, 8, 0)})), ['Day', unix(6, 11, 7, 30)]);
+});
+
+test('a hand pick marks the current slot handled, so a later catch-up skips it until the next time', () => {
+    const settings = memorySettings();
+    settings.set_value('schedule', new GLib.Variant('a(is)', [[450, 'Day'], [1080, 'Evening'], [1350, 'Night']]));
+    settings.set_int64('schedule-handled', unix(6, 10, 7, 30));
+    markHandPick(settings, at(6, 10, 19, 0));
+    assertEqual(settings.get_int64('schedule-handled'), unix(6, 10, 7, 30));
+
+    settings.set_boolean('schedule-enabled', true);
+    markHandPick(settings, at(6, 10, 19, 0));
+    assertEqual(settings.get_int64('schedule-handled'), unix(6, 10, 18, 0));
+    assertEqual(catchUpSlot(scheduleState(settings, at(6, 10, 21, 0))), null);
+    assertEqual(slotOf(catchUpSlot(scheduleState(settings, at(6, 10, 22, 31)))), ['Night', unix(6, 10, 22, 30)]);
+
+    markHandPick(settings, at(6, 10, 18, 30));
+    assertEqual(settings.get_int64('schedule-handled'), unix(6, 10, 18, 0));
 });
 
 test('editing the schedule keeps the current period handled unless a catch-up was still due', () => {

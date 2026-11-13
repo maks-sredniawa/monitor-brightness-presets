@@ -85,6 +85,12 @@ export function catchUpSlot({enabled, entries, names, handled, now}) {
     return slot && slot.at > handled ? slot : null;
 }
 
+export function markHandPick(settings, now) {
+    const slot = catchUpSlot(scheduleState(settings, now));
+    if (slot)
+        settings.set_int64('schedule-handled', slot.at);
+}
+
 export function handledAfterEdit({handled, before, after}) {
     const pending = before !== null && before.at > handled;
     return !pending && after !== null && after.at > handled ? after.at : handled;
