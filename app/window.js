@@ -41,6 +41,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         this._presetRequest = 0;
         this._pendingPreset = null;
         this._refreshRequest = 0;
+        this._followRequest = 0;
         this._replugTimer = 0;
         this._written = settings.get_string('active-preset');
 
@@ -184,20 +185,28 @@ class BrightnessWindow extends Adw.ApplicationWindow {
             this._settings.set_string('active-preset', name);
     }
 
-    // A pick in the Quick Settings tile has just written that preset to every monitor,
-    // so the sliders follow it without spending a DDC/CI read per monitor.
-    _followActivePreset() {
+    async _followActivePreset() {
         this._syncPresetMarks();
         const active = this._settings.get_string('active-preset');
         if (active === this._written)
             return;
         this._written = active;
-        const preset = this._presets().find(([name]) => name === active);
-        if (!preset)
+        const request = ++this._followRequest;
+        const rowRequests = new Map([...this._monitorRows].map(([bus, row]) => [bus, row.request]));
+        let displays;
+        try {
+            ({displays} = await this._monitors.read());
+        } catch (error) {
+            if (request === this._followRequest)
+                this._showError(error);
             return;
-        for (const row of this._monitorRows.values()) {
-            if (!row.note)
-                row.percent = preset[1];
+        }
+        if (request !== this._followRequest)
+            return;
+        for (const display of displays) {
+            const row = this._monitorRows.get(display.bus);
+            if (row && row.request === rowRequests.get(display.bus))
+                row.percent = display.percent;
         }
     }
 
@@ -205,8 +214,9 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         const request = ++this._presetRequest;
         this._pendingPreset = name;
         this._syncPresetMarks();
-        for (const row of this._monitorRows.values()) {
-            row.request++;
+        const rowRequests = new Map();
+        for (const [bus, row] of this._monitorRows) {
+            rowRequests.set(bus, ++row.request);
             row.working = false;
         }
         try {
@@ -215,7 +225,7 @@ class BrightnessWindow extends Adw.ApplicationWindow {
                 return;
             if (failed.length < displays.length)
                 this._writeActivePreset(name);
-            this._showWrites(displays, failed, percent);
+            this._showWrites(displays, failed, percent, rowRequests);
         } catch (error) {
             if (request === this._presetRequest)
                 this._showError(error);
@@ -227,13 +237,15 @@ class BrightnessWindow extends Adw.ApplicationWindow {
         }
     }
 
-    _showWrites(displays, failed, percent) {
+    _showWrites(displays, failed, percent, rowRequests) {
         if (displays.some(display => !this._monitorRows.has(display.bus))) {
             this._refresh();
             return;
         }
         for (const display of displays) {
             const row = this._monitorRows.get(display.bus);
+            if (row.request !== rowRequests.get(display.bus))
+                continue;
             if (failed.includes(display)) {
                 row.note = REJECTED;
             } else {

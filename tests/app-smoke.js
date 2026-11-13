@@ -84,12 +84,22 @@ step('moving one slider sets only that monitor and clears the active preset', as
     assertEqual(marks(win), ['Day:none', 'Evening:none', 'Night:none'], 'marks');
 });
 
-step('a pick made elsewhere ticks the preset and moves the sliders without writing', async (win, settings) => {
+step('a pick made elsewhere ticks the preset and reads the monitors back without writing', async (win, settings) => {
     GLib.file_set_contents(log, '');
     settings.set_string('active-preset', 'Evening');
-    await until(() => win._monitorRows.get(4).percent === 60, 'slider follows');
+    await until(() => win._monitorRows.get(4).percent === 70 && win._monitorRows.get(6).percent === 40, 'sliders read back');
     assertEqual(marks(win), ['Day:none', 'Evening:check', 'Night:none'], 'marks');
     assertEqual(writes(), [], 'writes');
+});
+
+step('a slider moved while a preset is being written keeps its own value', async (win, settings) => {
+    GLib.file_set_contents(log, '');
+    children(win._presetList)[2].emit('activated');
+    win._monitorRows.get(4)._scale.set_value(80);
+    await until(() => win._pendingPreset === null && settings.get_string('active-preset') === '' &&
+        writes().includes('--bus 4 setvcp 10 80'), 'both writes');
+    assertEqual(monitorState(win), [['LG ULTRAGEAR', 80, false], ['PL2745Q', 25, false]], 'rows');
+    assertEqual(writes().filter(call => call.startsWith('--bus 4 ')).at(-1), '--bus 4 setvcp 10 80', 'last bus 4 write');
 });
 
 step('a monitor that rejects a write keeps its slider, shows the note and is read back', async (win, settings) => {
