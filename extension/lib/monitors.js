@@ -1,7 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import {parseBrightness, parseDisplays, percentToValue} from './ddc.js';
+import {parseBrightness, parseDisplays, percentToValue, valueToPercent} from './ddc.js';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
@@ -42,13 +42,19 @@ function isHeldByAnotherDriver(display) {
     return display.reason === 'busy';
 }
 
+function covers(job, waiting) {
+    if (job.kind !== waiting.kind)
+        return false;
+    return job.kind === 'read' || job.bus === null || job.bus === waiting.bus;
+}
+
 export class Monitors {
     constructor() {
         this._cancellable = new Gio.Cancellable();
         this._detection = null;
         this._failingBuses = new Set();
-        this._applying = null;
-        this._pendingPercent = null;
+        this._queue = [];
+        this._draining = false;
     }
 
     forget() {
@@ -82,9 +88,13 @@ export class Monitors {
     }
 
     async _readMax(bus) {
+        return (await this._readBrightness(bus))?.max ?? null;
+    }
+
+    async _readBrightness(bus) {
         try {
             const output = await ddcutil(['--bus', `${bus}`, 'getvcp', '10', '--brief'], this._cancellable);
-            return parseBrightness(output)?.max ?? null;
+            return parseBrightness(output);
         } catch (error) {
             if (isCancelled(error))
                 throw error;
@@ -92,38 +102,81 @@ export class Monitors {
         }
     }
 
-    // Clicking presets in quick succession must leave the last one applied, so
-    // runs are serialised and only the newest waiting percent is kept.
     setBrightness(percent) {
-        this._pendingPercent = percent;
-        this._applying ??= this._drain().finally(() => {
-            this._applying = null;
+        return this._enqueue({kind: 'write', bus: null, percent});
+    }
+
+    setMonitorBrightness(bus, percent) {
+        return this._enqueue({kind: 'write', bus, percent});
+    }
+
+    read() {
+        return this._enqueue({kind: 'read'});
+    }
+
+    // Dragging a slider or clicking presets in quick succession must leave the last
+    // value applied, so ddcutil runs one job at a time and a waiting job is dropped,
+    // its callers handed the newer job's result, once a newer one covers it.
+    _enqueue(job) {
+        return new Promise((resolve, reject) => {
+            const covered = this._queue.filter(waiting => covers(job, waiting));
+            this._queue = this._queue.filter(waiting => !covered.includes(waiting));
+            job.callers = [{resolve, reject}, ...covered.flatMap(waiting => waiting.callers)];
+            this._queue.push(job);
+            if (!this._draining)
+                this._drain();
         });
-        return this._applying;
     }
 
     async _drain() {
-        let result;
-        while (this._pendingPercent !== null) {
-            const percent = this._pendingPercent;
-            this._pendingPercent = null;
-            result = await this._setAll(percent);
+        this._draining = true;
+        while (this._queue.length > 0) {
+            const job = this._queue.shift();
+            try {
+                const result = job.kind === 'read'
+                    ? await this._readAll()
+                    : await this._write(job.bus, job.percent);
+                job.callers.forEach(caller => caller.resolve(result));
+            } catch (error) {
+                job.callers.forEach(caller => caller.reject(error));
+            }
         }
-        return result;
+        this._draining = false;
     }
 
-    async _setAll(percent) {
+    async _write(bus, percent) {
         const {displays, unreachable} = await this.list();
-        const outcomes = await Promise.allSettled(displays.map(display =>
+        const targets = bus === null ? displays : displays.filter(display => display.bus === bus);
+        const outcomes = await Promise.allSettled(targets.map(display =>
             ddcutil(['--bus', `${display.bus}`, 'setvcp', '10',
                 `${percentToValue(percent, display.max)}`], this._cancellable)));
-        const failed = displays.filter((_display, i) => outcomes[i].status === 'rejected');
+        const failed = targets.filter((_display, i) => outcomes[i].status === 'rejected');
         // A monitor that rejects writes on a fresh detection too is ignoring DDC writes,
         // not sitting on a stale bus, so detecting again for it would only slow every pick.
         if (failed.some(display => !this._failingBuses.has(display.bus)))
             this.forget();
-        this._failingBuses = new Set(failed.map(display => display.bus));
-        return {displays, failed, unreachable};
+        for (const display of targets) {
+            if (failed.includes(display))
+                this._failingBuses.add(display.bus);
+            else
+                this._failingBuses.delete(display.bus);
+        }
+        return {displays: targets, failed, unreachable};
+    }
+
+    async _readAll() {
+        const {displays, unreachable} = await this.list();
+        const readings = await Promise.all(displays.map(display => this._readBrightness(display.bus)));
+        const silent = displays.filter((_display, i) => readings[i] === null);
+        if (silent.length > 0)
+            this.forget();
+        return {
+            displays: displays.flatMap((display, i) => readings[i] === null ? [] : [{
+                ...display,
+                percent: valueToPercent(readings[i].current, readings[i].max),
+            }]),
+            unreachable: [...unreachable, ...silent.map(({bus, name}) => ({bus, name, reason: 'silent'}))],
+        };
     }
 
     destroy() {

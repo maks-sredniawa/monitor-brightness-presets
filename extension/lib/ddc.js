@@ -45,3 +45,7 @@ export function percentToValue(percent, max) {
     const clamped = Math.min(100, Math.max(0, percent));
     return Math.round(clamped * max / 100);
 }
+
+export function valueToPercent(value, max) {
+    return max > 0 ? Math.round(value * 100 / max) : 0;
+}
